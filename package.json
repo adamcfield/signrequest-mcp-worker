@@ -1,0 +1,21 @@
+{
+  "name": "signrequest-mcp-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.23.0",
+    "agents": "^0.2.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0",
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.7.0"
+  }
+}
