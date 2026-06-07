@@ -465,4 +465,26 @@ export function registerTools(
     },
     async ({ uuid }) => run(() => client.getDocumentAttachment(uuid)),
   );
+
+  server.registerTool(
+    "signrequest_search_documents",
+    {
+      description:
+        "Search documents (fast, autocomplete-style) — the efficient way to find a specific person's documents without paging. Filter by signer_emails (documents a given email needs to sign/approve; comma-separate for multiple), free-text q, name, status, or who. Set signer_data=true to include per-signer details in the results.",
+      inputSchema: {
+        q: z.string().optional().describe("Free-text search query."),
+        name: z.string().optional().describe("Filter by document name."),
+        signer_emails: z
+          .string()
+          .optional()
+          .describe("Email(s) that need to sign/approve; comma-separate for multiple."),
+        status: z.string().optional().describe("Filter by status."),
+        who: z.string().optional(),
+        signer_data: z.boolean().optional().describe("Include per-signer details in results."),
+        page: z.number().int().positive().optional(),
+      },
+      annotations: { title: "Search documents", ...READ_ONLY },
+    },
+    async (a) => run(() => client.searchDocuments(a)),
+  );
 }

@@ -2,7 +2,7 @@
 
 The [SignRequest](https://signrequest.com) e-signature API exposed as a **remote [MCP](https://modelcontextprotocol.io) server**, running as a **Cloudflare Worker** (Streamable HTTP + SSE). Built on the [`agents`](https://github.com/cloudflare/agents) `McpAgent`.
 
-It exposes **nineteen tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, and read documents, templates, events & teams. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
+It exposes **twenty tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, and read documents, templates, events & teams. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
 
 This repo ships **two deployments from the same code**:
 
@@ -124,6 +124,7 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 | `signrequest_delete_document` | **Permanently delete** a document + its signature requests + stored file | `uuid` | **destructive** |
 | `signrequest_list_templates` | List templates; use a template's resource URL as `template` above | `page?` | read-only |
 | `signrequest_get_template` | Get one template by UUID — its fields and resource URL | `uuid` | read-only |
+| `signrequest_search_documents` | Fast search — filter by `signer_emails`, `q`, `name`, `status` (no blind paging) | filters | read-only |
 
 ### Events & teams
 
@@ -162,7 +163,7 @@ Used by `signrequest_quick_create` and `signrequest_send`:
 
 ## SignRequest API coverage
 
-This MCP covers **nineteen endpoints** of the SignRequest v1 API — the document-signing workflow plus read access to templates, events, and teams. Each tool maps 1:1 to a method in [`src/signrequest.ts`](src/signrequest.ts):
+This MCP covers **twenty endpoints** of the SignRequest v1 API — the document-signing workflow plus read access to templates, events, and teams. Each tool maps 1:1 to a method in [`src/signrequest.ts`](src/signrequest.ts):
 
 | Tool | SignRequest endpoint |
 |------|----------------------|
@@ -185,6 +186,7 @@ This MCP covers **nineteen endpoints** of the SignRequest v1 API — the documen
 | `signrequest_add_document_attachment` | `POST /document-attachments/` |
 | `signrequest_list_document_attachments` | `GET /document-attachments/` |
 | `signrequest_get_document_attachment` | `GET /document-attachments/{uuid}/` |
+| `signrequest_search_documents` | `GET /documents-search/` |
 
 **Still not exposed** (present in the SignRequest v1 API, intentionally omitted):
 
@@ -349,7 +351,7 @@ npx wrangler deploy -c wrangler.oauth.jsonc
 src/
   index.ts        Bearer worker entry — routing, bearer gate, McpAgent/Durable Object
   oauth.ts        OAuth worker entry — OAuthProvider + passphrase consent + McpAgent
-  tools.ts        registerTools() — the 19 tool definitions + Zod schemas (shared)
+  tools.ts        registerTools() — the 20 tool definitions + Zod schemas (shared)
   signrequest.ts  SignRequestClient — dependency-free REST client, fetch-only (shared)
   ai-stub.ts      stubs the unused `ai` peer dep out of the bundle
 wrangler.jsonc        bearer worker config (signrequest-mcp)

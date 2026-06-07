@@ -249,4 +249,22 @@ export class SignRequestClient {
   getDocumentAttachment(uuid: string) {
     return this.request("GET", `/document-attachments/${uuid}/`);
   }
+
+  // ---- Search ----
+  searchDocuments(query: {
+    q?: string;
+    name?: string;
+    signer_emails?: string;
+    status?: string;
+    who?: string;
+    signer_data?: boolean;
+    page?: number;
+  }) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+    }
+    const s = params.toString();
+    return this.request("GET", `/documents-search/${s ? `?${s}` : ""}`);
+  }
 }
