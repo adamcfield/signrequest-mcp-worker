@@ -1,0 +1,18 @@
+{
+  // OAuth-gated variant of the worker, for Claude.ai web custom connectors.
+  // Deploy with:  npx wrangler deploy -c wrangler.oauth.jsonc
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "signrequest-mcp-oauth",
+  "main": "src/oauth.ts",
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "MCP_OBJECT", "class_name": "SignRequestMCP" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SignRequestMCP"] }],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "78bea39d621541e997a7c8e3e360c9f4" }
+  ],
+  "alias": { "ai": "./src/ai-stub.ts" },
+  "observability": { "enabled": true }
+}

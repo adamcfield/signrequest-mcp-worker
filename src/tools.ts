@@ -339,4 +339,73 @@ export function registerTools(
     },
     async ({ page }) => run(() => client.listTemplates({ page })),
   );
+
+  server.registerTool(
+    "signrequest_get_template",
+    {
+      description:
+        "Get a single template by UUID — its fields and resource URL. Use that URL as 'template' in quick_create/create_document.",
+      inputSchema: { uuid: z.string().describe("Template UUID.") },
+      annotations: { title: "Get template", ...READ_ONLY },
+    },
+    async ({ uuid }) => run(() => client.getTemplate(uuid)),
+  );
+
+  server.registerTool(
+    "signrequest_list_events",
+    {
+      description:
+        "List events (the webhook delivery log), most recent first — e.g. signed/declined/viewed events. Useful for auditing what fired. Supports paging.",
+      inputSchema: { page: z.number().int().positive().optional() },
+      annotations: { title: "List events", ...READ_ONLY },
+    },
+    async ({ page }) => run(() => client.listEvents({ page })),
+  );
+
+  server.registerTool(
+    "signrequest_get_event",
+    {
+      description: "Get a single event by UUID from the webhook delivery log.",
+      inputSchema: { uuid: z.string().describe("Event UUID.") },
+      annotations: { title: "Get event", ...READ_ONLY },
+    },
+    async ({ uuid }) => run(() => client.getEvent(uuid)),
+  );
+
+  server.registerTool(
+    "signrequest_list_teams",
+    {
+      description: "List the teams the token can access (most recent first). Supports paging.",
+      inputSchema: { page: z.number().int().positive().optional() },
+      annotations: { title: "List teams", ...READ_ONLY },
+    },
+    async ({ page }) => run(() => client.listTeams({ page })),
+  );
+
+  server.registerTool(
+    "signrequest_list_team_members",
+    {
+      description: "List members of the team(s) the token can access. Supports paging.",
+      inputSchema: { page: z.number().int().positive().optional() },
+      annotations: { title: "List team members", ...READ_ONLY },
+    },
+    async ({ page }) => run(() => client.listTeamMembers({ page })),
+  );
+
+  server.registerTool(
+    "signrequest_delete_document",
+    {
+      description:
+        "Permanently DELETE a document by UUID — also removes its signature requests and the stored file. Irreversible; use with care.",
+      inputSchema: { uuid: z.string().describe("Document UUID to delete.") },
+      annotations: {
+        title: "Delete document",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ uuid }) => run(() => client.deleteDocument(uuid)),
+  );
 }

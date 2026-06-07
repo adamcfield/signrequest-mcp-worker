@@ -118,7 +118,7 @@ export class SignRequestClient {
   }
 
   private async request<T = unknown>(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     body?: unknown,
   ): Promise<T> {
@@ -185,6 +185,10 @@ export class SignRequestClient {
   listDocuments(query?: ListQuery) {
     return this.request("GET", `/documents/${this.buildQuery(query)}`);
   }
+  /** Permanently delete a document (and its signature requests). Irreversible. */
+  deleteDocument(uuid: string) {
+    return this.request("DELETE", `/documents/${uuid}/`);
+  }
 
   // ---- SignRequests ----
   send(params: SendParams) {
@@ -209,5 +213,24 @@ export class SignRequestClient {
   // ---- Templates ----
   listTemplates(query?: ListQuery) {
     return this.request("GET", `/templates/${this.buildQuery(query)}`);
+  }
+  getTemplate(uuid: string) {
+    return this.request("GET", `/templates/${uuid}/`);
+  }
+
+  // ---- Events (webhook delivery log) ----
+  listEvents(query?: ListQuery) {
+    return this.request("GET", `/events/${this.buildQuery(query)}`);
+  }
+  getEvent(uuid: string) {
+    return this.request("GET", `/events/${uuid}/`);
+  }
+
+  // ---- Teams ----
+  listTeams(query?: ListQuery) {
+    return this.request("GET", `/teams/${this.buildQuery(query)}`);
+  }
+  listTeamMembers(query?: ListQuery) {
+    return this.request("GET", `/team-members/${this.buildQuery(query)}`);
   }
 }
