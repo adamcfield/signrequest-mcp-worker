@@ -2,7 +2,7 @@
 
 The [SignRequest](https://signrequest.com) e-signature API exposed as a **remote [MCP](https://modelcontextprotocol.io) server**, running as a **Cloudflare Worker** (Streamable HTTP + SSE). Built on the [`agents`](https://github.com/cloudflare/agents) `McpAgent`.
 
-It exposes **sixteen tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, and read documents, templates, events & teams. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
+It exposes **nineteen tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, and read documents, templates, events & teams. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
 
 This repo ships **two deployments from the same code**:
 
@@ -134,6 +134,16 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 | `signrequest_list_teams` | List teams the token can access | `page?` | read-only |
 | `signrequest_list_team_members` | List members of accessible team(s) | `page?` | read-only |
 
+### Attachments
+
+| Tool | Purpose | Input | Class |
+|------|---------|-------|-------|
+| `signrequest_add_document_attachment` | Attach an extra file to a document (`file_from_url` or base64) — not a signature field | `document` + file source | write |
+| `signrequest_list_document_attachments` | List document attachments | `page?` | read-only |
+| `signrequest_get_document_attachment` | Get one attachment by UUID | `uuid` | read-only |
+
+> Attachments *collected from signers* aren't a separate tool — they come back inline on the signer object via `signrequest_get` (alongside the signer's filled `inputs`).
+
 ### Signer object
 
 Used by `signrequest_quick_create` and `signrequest_send`:
@@ -152,7 +162,7 @@ Used by `signrequest_quick_create` and `signrequest_send`:
 
 ## SignRequest API coverage
 
-This MCP covers **sixteen endpoints** of the SignRequest v1 API — the document-signing workflow plus read access to templates, events, and teams. Each tool maps 1:1 to a method in [`src/signrequest.ts`](src/signrequest.ts):
+This MCP covers **nineteen endpoints** of the SignRequest v1 API — the document-signing workflow plus read access to templates, events, and teams. Each tool maps 1:1 to a method in [`src/signrequest.ts`](src/signrequest.ts):
 
 | Tool | SignRequest endpoint |
 |------|----------------------|
@@ -172,12 +182,15 @@ This MCP covers **sixteen endpoints** of the SignRequest v1 API — the document
 | `signrequest_get_event` | `GET /events/{uuid}/` |
 | `signrequest_list_teams` | `GET /teams/` |
 | `signrequest_list_team_members` | `GET /team-members/` |
+| `signrequest_add_document_attachment` | `POST /document-attachments/` |
+| `signrequest_list_document_attachments` | `GET /document-attachments/` |
+| `signrequest_get_document_attachment` | `GET /document-attachments/{uuid}/` |
 
 **Still not exposed** (present in the SignRequest v1 API, intentionally omitted):
 
-- **Attachments** — document attachments and signer-collected attachments (need multipart upload)
+- **Signer-collected attachments** as a standalone resource — they come back inline on the signer object via `signrequest_get` (document attachments themselves *are* supported, above)
 - **Team write ops** — create/modify a team, fetch a single team by subdomain, invite members
-- **API-token management** (deliberately excluded for security) and **e-sign disclosures**
+- **API-token create/delete** — SignRequest's API is **list-only** for tokens (create/revoke are web-UI only); a read-only `list_api_tokens` tool can be added on request but it returns secret token values, so it's omitted by default. Also **e-sign disclosures**.
 - A standalone signer resource — SignRequest has none; signer data comes back inside sign-request objects (`signrequest_get`)
 
 If you need any of these, add a method to `SignRequestClient` and a tool in `registerTools()`. Full API: <https://signrequest.com/api/v1/docs/>.
@@ -336,7 +349,7 @@ npx wrangler deploy -c wrangler.oauth.jsonc
 src/
   index.ts        Bearer worker entry — routing, bearer gate, McpAgent/Durable Object
   oauth.ts        OAuth worker entry — OAuthProvider + passphrase consent + McpAgent
-  tools.ts        registerTools() — the 16 tool definitions + Zod schemas (shared)
+  tools.ts        registerTools() — the 19 tool definitions + Zod schemas (shared)
   signrequest.ts  SignRequestClient — dependency-free REST client, fetch-only (shared)
   ai-stub.ts      stubs the unused `ai` peer dep out of the bundle
 wrangler.jsonc        bearer worker config (signrequest-mcp)

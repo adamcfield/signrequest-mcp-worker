@@ -408,4 +408,61 @@ export function registerTools(
     },
     async ({ uuid }) => run(() => client.deleteDocument(uuid)),
   );
+
+  server.registerTool(
+    "signrequest_add_document_attachment",
+    {
+      description:
+        "Attach an extra file to an existing document (an attached file shown alongside it — NOT a signature field). Provide the document resource URL and a file source: file_from_url (preferred) or base64 file_from_content + name.",
+      inputSchema: {
+        document: z.string().url().describe("Resource URL of the document to attach to."),
+        file_from_url: z.string().url().optional().describe("Public URL SignRequest downloads. Preferred."),
+        file_from_content: z.string().optional().describe("Base64-encoded file contents (small files only)."),
+        file_from_content_name: z
+          .string()
+          .optional()
+          .describe("Filename WITH extension, e.g. 'addendum.pdf'. Required if file_from_content is set."),
+      },
+      annotations: {
+        title: "Add document attachment",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (a) => {
+      try {
+        if (!a.file_from_url && !a.file_from_content) {
+          throw new Error("Provide file_from_url or file_from_content (+ file_from_content_name).");
+        }
+        if (a.file_from_content && !a.file_from_content_name) {
+          throw new Error("file_from_content_name is required when file_from_content is provided.");
+        }
+        return await run(() => client.addDocumentAttachment(a));
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "signrequest_list_document_attachments",
+    {
+      description: "List document attachments (most recent first). Supports paging.",
+      inputSchema: { page: z.number().int().positive().optional() },
+      annotations: { title: "List document attachments", ...READ_ONLY },
+    },
+    async ({ page }) => run(() => client.listDocumentAttachments({ page })),
+  );
+
+  server.registerTool(
+    "signrequest_get_document_attachment",
+    {
+      description: "Get a single document attachment by UUID.",
+      inputSchema: { uuid: z.string().describe("Attachment UUID.") },
+      annotations: { title: "Get document attachment", ...READ_ONLY },
+    },
+    async ({ uuid }) => run(() => client.getDocumentAttachment(uuid)),
+  );
 }

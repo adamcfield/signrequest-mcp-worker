@@ -233,4 +233,20 @@ export class SignRequestClient {
   listTeamMembers(query?: ListQuery) {
     return this.request("GET", `/team-members/${this.buildQuery(query)}`);
   }
+
+  // ---- Document attachments ----
+  addDocumentAttachment(params: {
+    document: string;
+    file_from_url?: string;
+    file_from_content?: string;
+    file_from_content_name?: string;
+  }) {
+    return this.request("POST", "/document-attachments/", params);
+  }
+  listDocumentAttachments(query?: ListQuery) {
+    return this.request("GET", `/document-attachments/${this.buildQuery(query)}`);
+  }
+  getDocumentAttachment(uuid: string) {
+    return this.request("GET", `/document-attachments/${uuid}/`);
+  }
 }
