@@ -2,7 +2,7 @@
 
 The [SignRequest](https://signrequest.com) e-signature API exposed as a **remote [MCP](https://modelcontextprotocol.io) server**, running as a **Cloudflare Worker** (Streamable HTTP + SSE). Built on the [`agents`](https://github.com/cloudflare/agents) `McpAgent`.
 
-It exposes **twenty tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, and read documents, templates, events & teams. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
+It exposes **twenty-seven tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, read documents, templates, events & teams, plus high-level helpers (one-shot signer summaries, flat field extraction, batch reads) and a safe no-email signing-link generator. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
 
 This repo ships **two deployments from the same code**:
 
@@ -99,6 +99,8 @@ Create a document **and** send the signature request in one call — the most co
 | `send_reminders` | boolean | auto-remind signers who haven't signed |
 | `who` | `m` \| `o` \| `mo` | `m`=only me, `o`=only others, `mo`=both |
 | `external_id`, `name`, `events_callback_url` | string | your ref id · display name · per-document webhook URL |
+| `disable_emails` | boolean | suppress SignRequest status emails (with embedded signers = fully silent) |
+| `dry_run` | boolean | preview who *would* be emailed; creates/sends nothing |
 
 #### `signrequest_create_document`
 Create a document **without** sending it. Returns a document with a `url`/`uuid` you can pass to `signrequest_send` later. *Write · emails no one.* Accepts the document-source fields above plus `external_id`, `name`, `events_callback_url`.
@@ -113,13 +115,13 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 | `signrequest_get` | Get one signature request — status, signers, who signed/declined/viewed | `uuid` | read-only |
 | `signrequest_list` | List signature requests (most recent first) | `page?`, `external_id?` | read-only |
 | `signrequest_cancel` | Cancel a request; unsigned signers lose access. Only if not already fully signed/declined | `uuid` | **destructive**, idempotent |
-| `signrequest_resend` | Resend the signing email to signers who haven't signed | `uuid` | write · sends email |
+| `signrequest_resend` | Resend the signing email to signers who haven't signed (`dry_run?` previews) | `uuid`, `dry_run?` | write · sends email |
 
 ### Documents & templates
 
 | Tool | Purpose | Input | Class |
 |------|---------|-------|-------|
-| `signrequest_get_document` | Get a document — conversion status, signed-PDF URL, security hash, signing log | `uuid` | read-only |
+| `signrequest_get_document` | Get a document — conversion status, signed-PDF URL, security hash, signing log (`compact?` = trimmed summary) | `uuid`, `compact?` | read-only |
 | `signrequest_list_documents` | List documents (most recent first) | `page?`, `external_id?` | read-only |
 | `signrequest_delete_document` | **Permanently delete** a document + its signature requests + stored file | `uuid` | **destructive** |
 | `signrequest_list_templates` | List templates; use a template's resource URL as `template` above | `page?` | read-only |
@@ -145,6 +147,22 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 
 > Attachments *collected from signers* aren't a separate tool — they come back inline on the signer object via `signrequest_get` (alongside the signer's filled `inputs`).
 
+### High-level helpers & safety
+
+These compose the raw endpoints into a single call each — they encode the "find the *signed* document, read its filled fields" logic so callers never have to walk `signrequest.signers[].inputs[]` or guess which of a person's documents is the real one.
+
+| Tool | Purpose | Input | Class |
+|------|---------|-------|-------|
+| `signrequest_whoami` | Token health check — confirms the API token works; returns teams & members | — | read-only |
+| `signrequest_get_signer_summary` | **One-shot status for a person**: finds their *signed* document and returns status, signed-PDF URL, `embed_url`, and filled fields as a flat `{external_id: value}` map | `email`, `name_contains?` | read-only |
+| `signrequest_get_document_fields` | A document's filled values as a flat `{external_id: value}` map + compact signers | `uuid`, `signer_email?` | read-only |
+| `signrequest_get_signed_pdf` | Fresh (time-limited) signed-PDF + signing-log URLs | `uuid` | read-only |
+| `signrequest_get_signing_link` | A signer's embedded signing link (`embed_url`) | `uuid`, `signer_email?` | read-only |
+| `signrequest_get_documents` | Batch-fetch up to 50 documents as **compact** summaries (fewer round-trips, less context) | `uuids[]` | read-only |
+| `signrequest_create_embedded_signing_links` | **Safe link generator** — forces `disable_emails` + embedded signing for every signer and returns each `embed_url`; **no one is emailed** | doc source *or* `document`, `signers[]` | write · no email |
+
+**Safety flags:** `quick_create` / `send` / `resend` accept `dry_run` (preview who *would* be emailed, send nothing); `quick_create` accepts `disable_emails`; `get_document` accepts `compact`.
+
 ### Signer object
 
 Used by `signrequest_quick_create` and `signrequest_send`:
@@ -163,7 +181,7 @@ Used by `signrequest_quick_create` and `signrequest_send`:
 
 ## SignRequest API coverage
 
-This MCP covers **twenty endpoints** of the SignRequest v1 API — the document-signing workflow plus read access to templates, events, and teams. Each tool maps 1:1 to a method in [`src/signrequest.ts`](src/signrequest.ts):
+This MCP covers **twenty endpoints** of the SignRequest v1 API — the document-signing workflow plus read access to templates, events, and teams. The twenty base tools below map 1:1 to a method in [`src/signrequest.ts`](src/signrequest.ts); the seven [high-level helpers](#high-level-helpers--safety) compose these same endpoints (e.g. search → get → field-extract):
 
 | Tool | SignRequest endpoint |
 |------|----------------------|
@@ -351,7 +369,7 @@ npx wrangler deploy -c wrangler.oauth.jsonc
 src/
   index.ts        Bearer worker entry — routing, bearer gate, McpAgent/Durable Object
   oauth.ts        OAuth worker entry — OAuthProvider + passphrase consent + McpAgent
-  tools.ts        registerTools() — the 20 tool definitions + Zod schemas (shared)
+  tools.ts        registerTools() — the 27 tool definitions + Zod schemas (shared)
   signrequest.ts  SignRequestClient — dependency-free REST client, fetch-only (shared)
   ai-stub.ts      stubs the unused `ai` peer dep out of the bundle
 wrangler.jsonc        bearer worker config (signrequest-mcp)

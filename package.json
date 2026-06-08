@@ -1,12 +1,14 @@
 {
   "name": "signrequest-mcp-worker",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "deploy:oauth": "wrangler deploy -c wrangler.oauth.jsonc",
+    "dev": "wrangler dev",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.7.2",
