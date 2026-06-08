@@ -90,4 +90,26 @@ describe("mapLimit", () => {
   it("handles an empty list", async () => {
     expect(await mapLimit([], 4, async () => 1)).toEqual([]);
   });
+
+  it("rejects if any task throws", async () => {
+    await expect(
+      mapLimit([1, 2, 3], 2, async (n) => {
+        if (n === 2) throw new Error("boom");
+        return n;
+      }),
+    ).rejects.toThrow("boom");
+  });
+});
+
+describe("SignRequestClient.searchAllDocuments", () => {
+  it("follows pagination across pages", async () => {
+    const f = mockFetch([
+      { status: 200, body: JSON.stringify({ next: "p2", results: [{ uuid: "a" }] }) },
+      { status: 200, body: JSON.stringify({ next: null, results: [{ uuid: "b" }] }) },
+    ]);
+    vi.stubGlobal("fetch", f);
+    const all = (await mkClient().searchAllDocuments({ q: "x" })) as Array<{ uuid: string }>;
+    expect(all.map((d) => d.uuid)).toEqual(["a", "b"]);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
 });
