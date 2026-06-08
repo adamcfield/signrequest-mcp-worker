@@ -36,6 +36,12 @@ export interface Signer {
   message?: string;
   /** Redirect here after signing (only if no chained documents remain). */
   redirect_url?: string;
+  /**
+   * Enable EMBEDDED signing for this signer: the API returns an `embed_url`
+   * (a direct signing link) for them and SignRequest does NOT email them.
+   * Value is your app's user id (recorded in the signing log).
+   */
+  embed_url_user_id?: string;
 }
 
 export interface DocumentParams {
@@ -66,6 +72,8 @@ export interface SendParams {
   send_reminders?: boolean;
   /** 'm' = only me, 'o' = only others, 'mo' = me & others. */
   who?: "m" | "o" | "mo";
+  /** Suppress SignRequest status emails (event emails also need a callback_url). */
+  disable_emails?: boolean;
 }
 
 export interface QuickCreateParams extends DocumentParams {
@@ -76,6 +84,8 @@ export interface QuickCreateParams extends DocumentParams {
   message?: string;
   send_reminders?: boolean;
   who?: "m" | "o" | "mo";
+  /** Suppress SignRequest status emails. Combine with per-signer embed_url_user_id for a silent request. */
+  disable_emails?: boolean;
 }
 
 export interface ListQuery {
