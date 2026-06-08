@@ -120,3 +120,22 @@ describe("buildSignerSummary", () => {
     expect(s.fields).toEqual({});
   });
 });
+
+describe("edge cases", () => {
+  it("extractFields includes a false checkbox", () => {
+    expect(extractFields({ inputs: [{ external_id: "Agree", checkbox_value: false }] })).toEqual({ Agree: "false" });
+  });
+  it("pickSigner falls back to the owner when they are the only signer", () => {
+    const doc = { signrequest: { from_email: "o@x.com", signers: [{ email: "o@x.com", signed: true }] } };
+    expect(pickSigner(doc)?.email).toBe("o@x.com");
+  });
+  it("compactDoc tolerates a missing signrequest block", () => {
+    const c = compactDoc({ uuid: "u", name: "N", status: "se" });
+    expect(c.signers).toEqual([]);
+    expect(c.status).toBe("sent");
+    expect(c.signed_pdf_url).toBeNull();
+  });
+  it("readableStatus maps an empty code to unknown", () => {
+    expect(readableStatus("")).toBe("unknown");
+  });
+});
