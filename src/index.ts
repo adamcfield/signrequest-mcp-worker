@@ -39,7 +39,7 @@ declare global {
 type Env = Cloudflare.Env;
 
 export class SignRequestMCP extends McpAgent<Env> {
-  server = new McpServer({ name: "signrequest", version: "1.3.0" });
+  server = new McpServer({ name: "signrequest", version: "1.4.0" });
 
   async init(): Promise<void> {
     const client = new SignRequestClient({

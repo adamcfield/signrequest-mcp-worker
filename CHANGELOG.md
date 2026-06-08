@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0 — Dependency upgrade (security)
+
+### Changed
+- Upgraded `agents` 0.2 → **0.14.5**, `@modelcontextprotocol/sdk` 1.23 → **1.29.0**, `zod` 3 → **4**.
+  Clears 3 MCP SDK advisories (ReDoS, cross-client instance reuse, DNS-rebinding default) —
+  `npm audit` now reports **0 vulnerabilities**.
+- No API or behavior change: same 32 tools; typecheck + 24 tests green; both workers redeployed
+  and smoke-verified live (tool execution + zod-4 input validation). `ai`/`react` are required
+  peers of `agents` but are never bundled into the Worker.
+
 ## 1.3.0 — Enterprise pass
 
 ### Added
