@@ -31,13 +31,15 @@ declare global {
       SIGNREQUEST_FROM_EMAIL?: string;
       SIGNREQUEST_BASE_URL?: string;
       SIGNREQUEST_MAX_RETRIES?: string;
+      /** "true" => register read-only tools only (no create/send/cancel/delete). */
+      MCP_READONLY?: string;
     }
   }
 }
 type Env = Cloudflare.Env;
 
 export class SignRequestMCP extends McpAgent<Env> {
-  server = new McpServer({ name: "signrequest", version: "1.2.0" });
+  server = new McpServer({ name: "signrequest", version: "1.3.0" });
 
   async init(): Promise<void> {
     const client = new SignRequestClient({
@@ -49,6 +51,7 @@ export class SignRequestMCP extends McpAgent<Env> {
     });
     registerTools(this.server, client, {
       defaultFromEmail: this.env.SIGNREQUEST_FROM_EMAIL,
+      readOnly: this.env.MCP_READONLY === "true",
     });
   }
 }

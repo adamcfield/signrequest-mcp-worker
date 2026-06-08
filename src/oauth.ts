@@ -41,7 +41,7 @@ type AuthRequest = Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>>;
 
 /** The MCP agent — identical tool surface to the bearer worker. */
 export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
-  server = new McpServer({ name: "signrequest", version: "1.2.0" });
+  server = new McpServer({ name: "signrequest", version: "1.3.0" });
 
   async init(): Promise<void> {
     const client = new SignRequestClient({
@@ -53,6 +53,7 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
     });
     registerTools(this.server, client, {
       defaultFromEmail: this.env.SIGNREQUEST_FROM_EMAIL,
+      readOnly: this.env.MCP_READONLY === "true",
     });
   }
 }
