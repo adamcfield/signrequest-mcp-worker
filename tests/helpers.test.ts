@@ -28,14 +28,14 @@ describe("extractFields", () => {
   it("flattens text/date/checkbox and skips empties + id-less inputs", () => {
     const signer = {
       inputs: [
-        { external_id: "Bank", text: "Leumi" },
+        { external_id: "Reference", text: "REF-001" },
         { external_id: "SignDate", date_value: "2026-06-01" },
         { external_id: "Agree", checkbox_value: true },
         { external_id: "Empty", text: "" },
         { text: "no id" },
       ],
     };
-    expect(extractFields(signer)).toEqual({ Bank: "Leumi", SignDate: "2026-06-01", Agree: "true" });
+    expect(extractFields(signer)).toEqual({ Reference: "REF-001", SignDate: "2026-06-01", Agree: "true" });
   });
   it("handles a null signer", () => {
     expect(extractFields(null)).toEqual({});
@@ -83,8 +83,8 @@ describe("buildSignerSummary", () => {
     const fakeClient = {
       searchDocuments: async () => ({
         results: [
-          { uuid: "d-sent", name: "התחייבות לחסימה A", status: "se" },
-          { uuid: "d-signed", name: "התחייבות לחסימה A", status: "si" },
+          { uuid: "d-sent", name: "Service Agreement A", status: "se" },
+          { uuid: "d-signed", name: "Service Agreement A", status: "si" },
         ],
       }),
       getDocument: async (uuid: string) => ({
@@ -95,18 +95,18 @@ describe("buildSignerSummary", () => {
           from_email: "owner@x.com",
           signers: [
             { email: "owner@x.com", signed: true },
-            { email: "alice@x.com", signed: true, embed_url: "http://e", inputs: [{ external_id: "Bank", text: "Leumi" }] },
+            { email: "alice@x.com", signed: true, embed_url: "http://e", inputs: [{ external_id: "Reference", text: "REF-001" }] },
           ],
         },
       }),
     } as never;
-    const s = await buildSignerSummary(fakeClient, "ALICE@x.com", "חסימה");
+    const s = await buildSignerSummary(fakeClient, "ALICE@x.com", "Agreement");
     expect(s.status).toBe("signed");
     expect(s.signed).toBe(true);
     expect(s.signed_doc_uuid).toBe("d-signed");
     expect(s.signed_pdf_url).toBe("http://pdf");
     expect(s.embed_url).toBe("http://e");
-    expect(s.fields).toEqual({ Bank: "Leumi" });
+    expect(s.fields).toEqual({ Reference: "REF-001" });
     expect(s.matched_documents).toBe(2);
   });
   it("returns not_found when no documents match", async () => {
@@ -114,7 +114,7 @@ describe("buildSignerSummary", () => {
       searchDocuments: async () => ({ results: [] }),
       getDocument: async () => ({}),
     } as never;
-    const s = await buildSignerSummary(fakeClient, "nobody@x.com", "חסימה");
+    const s = await buildSignerSummary(fakeClient, "nobody@x.com", "Agreement");
     expect(s.status).toBe("not_found");
     expect(s.signed_doc_uuid).toBeNull();
     expect(s.fields).toEqual({});

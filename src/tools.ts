@@ -700,7 +700,7 @@ export function registerTools(
     "signrequest_get_signer_summary",
     {
       description:
-        "One-shot status for a person: searches that signer's documents and returns the SIGNED one's details — overall status, signed-PDF URL, embedded signing link (embed_url), and the filled field values as a flat { external_id: value } map (e.g. bank/branch/account). A person can have multiple documents; this always reads the signed one (where entered values live), which a naive 'most recent document' lookup would miss. Scope to a document type with name_contains. Replaces the search -> get_document -> parse-inputs dance.",
+        "One-shot status for a person: searches that signer's documents and returns the SIGNED one's details — overall status, signed-PDF URL, embedded signing link (embed_url), and the filled field values as a flat { external_id: value } map (e.g. an amount, reference number, or date). A person can have multiple documents; this always reads the signed one (where entered values live), which a naive 'most recent document' lookup would miss. Scope to a document type with name_contains. Replaces the search -> get_document -> parse-inputs dance.",
       inputSchema: {
         email: z.string().email().describe("The signer's email (matched case-insensitively)."),
         name_contains: z
@@ -717,7 +717,7 @@ export function registerTools(
     "signrequest_get_document_fields",
     {
       description:
-        "Get a document's filled field values as a flat { external_id: value } map (text/date/checkbox flattened) plus a compact signer list — the easy way to read what a signer entered (e.g. bank details) without walking the raw signers[].inputs[] structure. Optionally target a specific signer by email.",
+        "Get a document's filled field values as a flat { external_id: value } map (text/date/checkbox flattened) plus a compact signer list — the easy way to read what a signer entered (e.g. an amount or reference) without walking the raw signers[].inputs[] structure. Optionally target a specific signer by email.",
       inputSchema: {
         uuid: z.string().describe("Document UUID."),
         signer_email: z
@@ -1000,7 +1000,7 @@ export function registerTools(
     "signrequest_bulk_send",
     {
       description:
-        "Send the SAME template (or file) to many recipients as a campaign — one signature request per recipient (each gets their own copy). Bounded concurrency, per-recipient results, dry_run preview, and an `embedded` switch (no emails; returns each embed_url). For lock-up / mass-onboarding. Up to 200 recipients.",
+        "Send the SAME template (or file) to many recipients as a campaign — one signature request per recipient (each gets their own copy). Bounded concurrency, per-recipient results, dry_run preview, and an `embedded` switch (no emails; returns each embed_url). For onboarding, NDAs, waivers, or any bulk agreement. Up to 200 recipients.",
       inputSchema: {
         template: z.string().url().optional().describe("Template resource URL (each recipient gets a copy)."),
         file_from_url: z.string().url().optional().describe("Or a public file URL SignRequest downloads."),
