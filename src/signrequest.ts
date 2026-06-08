@@ -22,6 +22,31 @@ export class SignRequestError extends Error {
   }
 }
 
+/**
+ * Run an async fn over `items` with bounded concurrency, preserving input order.
+ * Enterprise batch ops (campaign rollups, bulk send) use this so we never open
+ * hundreds of simultaneous connections or trip SignRequest's rate limiter.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Math.max(1, Math.min(limit, items.length || 1));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (;;) {
+        const i = cursor++;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i], i);
+      }
+    }),
+  );
+  return out;
+}
+
 export interface Signer {
   /** Signer email. Required. */
   email: string;
@@ -98,6 +123,7 @@ export class SignRequestClient {
   private baseUrl: string;
   private maxRetries: number;
   private timeoutMs: number;
+  private backoffBaseMs: number;
 
   constructor(opts: {
     token: string;
@@ -106,12 +132,15 @@ export class SignRequestClient {
     maxRetries?: number;
     /** Per-request timeout in ms. Default 30000. */
     timeoutMs?: number;
+    /** Base for exponential backoff (ms). Default 1000. Lower it in tests for speed. */
+    backoffBaseMs?: number;
   }) {
     if (!opts.token) throw new Error("SignRequestClient requires an API token");
     this.token = opts.token;
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.maxRetries = opts.maxRetries ?? 3;
     this.timeoutMs = opts.timeoutMs ?? 30000;
+    this.backoffBaseMs = opts.backoffBaseMs ?? 1000;
   }
 
   /** Exponential backoff with jitter; honors Retry-After (seconds) when present. */
@@ -121,7 +150,7 @@ export class SignRequestClient {
     if (Number.isFinite(secs)) {
       delayMs = secs * 1000;
     } else {
-      delayMs = Math.min(1000 * 2 ** attempt, 8000);
+      delayMs = Math.min(this.backoffBaseMs * 2 ** attempt, 8000);
     }
     delayMs += Math.floor(Math.random() * 250); // jitter
     return new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -139,6 +168,14 @@ export class SignRequestClient {
     if (body !== undefined) headers["Content-Type"] = "application/json";
 
     const url = `${this.baseUrl}${path}`;
+    if (method !== "GET") {
+      // Non-PII audit trail for state-changing calls (surfaced via `wrangler tail`).
+      try {
+        console.log(`[signrequest-mcp] ${method} ${path}`);
+      } catch {
+        /* ignore */
+      }
+    }
     // Only GETs are retried. POSTs (create/send/cancel/resend) are never auto-retried,
     // since a retry could double-create a document or re-send signing emails.
     const isIdempotent = method === "GET";
@@ -276,5 +313,37 @@ export class SignRequestClient {
     }
     const s = params.toString();
     return this.request("GET", `/documents-search/${s ? `?${s}` : ""}`);
+  }
+
+  // ---- Auto-pagination ----
+  /** Walk every page of a paginated endpoint (count/next/results) up to `cap` items. */
+  private async paginate(
+    getPage: (page: number) => Promise<unknown>,
+    cap: number,
+  ): Promise<unknown[]> {
+    const all: unknown[] = [];
+    for (let page = 1; page <= 1000; page++) {
+      const res = (await getPage(page)) as { results?: unknown[]; next?: string | null };
+      const results = res?.results ?? [];
+      all.push(...results);
+      if (!res?.next || all.length >= cap) break;
+    }
+    return all.slice(0, cap);
+  }
+
+  /** Every document (most recent first), following pagination up to `cap` (default 500). */
+  listAllDocuments(opts: { cap?: number; external_id?: string } = {}): Promise<unknown[]> {
+    return this.paginate(
+      (page) => this.listDocuments({ page, external_id: opts.external_id }),
+      opts.cap ?? 500,
+    );
+  }
+
+  /** Every search hit, following pagination up to `cap` (default 500). */
+  searchAllDocuments(
+    query: { q?: string; name?: string; signer_emails?: string; status?: string; signer_data?: boolean },
+    cap = 500,
+  ): Promise<unknown[]> {
+    return this.paginate((page) => this.searchDocuments({ ...query, page }), cap);
   }
 }

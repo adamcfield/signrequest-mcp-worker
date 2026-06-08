@@ -7,7 +7,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { SignRequestClient, SignRequestError } from "./signrequest.js";
+import { SignRequestClient, SignRequestError, mapLimit, type Signer } from "./signrequest.js";
 
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -43,11 +43,11 @@ const DOC_STATUS: Record<string, string> = {
   do: "signed (downloaded)", sd: "signed (downloaded)", ca: "cancelled",
   de: "declined", ex: "expired", er: "error",
 };
-const readableStatus = (code?: string): string => (code && DOC_STATUS[code]) || code || "unknown";
-const isSignedCode = (code?: string): boolean => code === "si" || code === "sd" || code === "do";
+export const readableStatus = (code?: string): string => (code && DOC_STATUS[code]) || code || "unknown";
+export const isSignedCode = (code?: string): boolean => code === "si" || code === "sd" || code === "do";
 
 /** Flatten a signer's filled inputs to a { external_id: value } map (text/date/checkbox). */
-function extractFields(signer: AnyRec | null | undefined): Record<string, string> {
+export function extractFields(signer: AnyRec | null | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   for (const inp of (signer?.inputs as AnyRec[]) ?? []) {
     const id = inp?.external_id;
@@ -63,22 +63,27 @@ function extractFields(signer: AnyRec | null | undefined): Record<string, string
 }
 
 /** Pick the relevant signer: the matching email, else the one who signed, else the first non-owner. */
-function pickSigner(doc: AnyRec, email?: string): AnyRec | null {
+export function pickSigner(doc: AnyRec, email?: string): AnyRec | null {
   const sr = (doc?.signrequest as AnyRec) ?? {};
   const signers: AnyRec[] = sr.signers ?? [];
   if (!signers.length) return null;
   const lower = email?.toLowerCase();
   const owner = String(sr.from_email ?? "").toLowerCase();
+  const isOwner = (s: AnyRec) => String(s.email ?? "").toLowerCase() === owner;
+  // Precedence: exact email match > signed non-owner > any non-owner > any signed > first.
+  // (The sender/owner is often auto-"signed", so we must not return them just because they
+  // signed — the field values we care about live on the actual recipient signer.)
   return (
     (lower ? signers.find((s) => String(s.email ?? "").toLowerCase() === lower) : undefined) ??
+    signers.find((s) => s.signed && !isOwner(s)) ??
+    signers.find((s) => !isOwner(s)) ??
     signers.find((s) => s.signed) ??
-    signers.find((s) => String(s.email ?? "").toLowerCase() !== owner) ??
     signers[0] ?? null
   );
 }
 
 /** Trim a document object to the fields that matter (keeps LLM context small). */
-function compactDoc(doc: AnyRec): AnyRec {
+export function compactDoc(doc: AnyRec): AnyRec {
   const sr = (doc?.signrequest as AnyRec) ?? {};
   const signers: AnyRec[] = sr.signers ?? [];
   return {
@@ -97,6 +102,51 @@ function compactDoc(doc: AnyRec): AnyRec {
       embed_url: s.embed_url ?? null,
     })),
   };
+}
+
+/** Build a one-shot signer summary (shared by get_signer_summary + campaign_status). */
+export async function buildSignerSummary(
+  client: SignRequestClient,
+  email: string,
+  nameContains?: string,
+): Promise<AnyRec> {
+  const lower = email.toLowerCase();
+  const search = (await client.searchDocuments({ signer_emails: lower, signer_data: true })) as AnyRec;
+  let results: AnyRec[] = search?.results ?? [];
+  if (nameContains) results = results.filter((r) => String(r.name ?? "").includes(nameContains));
+  const documents = results.map((r) => ({ uuid: r.uuid, name: r.name, status: readableStatus(r.status) }));
+  const signedHit = results.find((r) => isSignedCode(r.status));
+  const target = signedHit ?? results[0];
+  if (!target) {
+    return {
+      email: lower, status: "not_found", matched_documents: 0, documents,
+      signed_doc_uuid: null, signed_pdf_url: null, embed_url: null, sign_date: null, fields: {},
+    };
+  }
+  const doc = (await client.getDocument(target.uuid)) as AnyRec;
+  const signer = pickSigner(doc, lower);
+  const fields = extractFields(signer);
+  return {
+    email: lower,
+    status: readableStatus(doc.status),
+    signed: !!signer?.signed,
+    matched_documents: results.length,
+    documents,
+    signed_doc_uuid: signedHit ? doc.uuid : null,
+    signed_pdf_url: signedHit ? (doc.pdf ?? null) : null,
+    embed_url: signer?.embed_url ?? null,
+    sign_date: fields.SignDate ?? null,
+    fields,
+  };
+}
+
+/** Lightweight, non-PII audit line for write operations (surfaced via `wrangler tail`). */
+function audit(action: string, meta: Record<string, unknown>): void {
+  try {
+    console.log(`[signrequest-mcp audit] ${action} ${JSON.stringify(meta)}`);
+  } catch {
+    /* never let logging break a tool call */
+  }
 }
 
 const signerSchema = z.object({
@@ -163,6 +213,8 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: tru
 export interface RegisterToolsOptions {
   /** Default sender email if a tool call omits from_email. */
   defaultFromEmail?: string;
+  /** When true, write/state-changing tools are not registered at all (reporting-only deploys). */
+  readOnly?: boolean;
 }
 
 /** Register all SignRequest tools onto the given MCP server. */
@@ -181,7 +233,16 @@ export function registerTools(
     return v;
   };
 
-  server.registerTool(
+  // Register a write/state-changing tool — a no-op when the server is read-only
+  // (MCP_READONLY), so those tools never even appear in tools/list. Reads use
+  // server.registerTool directly. Typed as the real method so handler arg
+  // inference from the Zod inputSchema is preserved.
+  const noop = (() => undefined) as unknown as McpServer["registerTool"];
+  const writeTool: McpServer["registerTool"] = opts.readOnly
+    ? noop
+    : (server.registerTool.bind(server) as McpServer["registerTool"]);
+
+  writeTool(
     "signrequest_quick_create",
     {
       description:
@@ -253,7 +314,7 @@ export function registerTools(
     },
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_create_document",
     {
       description:
@@ -292,7 +353,7 @@ export function registerTools(
     },
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_send",
     {
       description:
@@ -380,7 +441,7 @@ export function registerTools(
     async ({ page, external_id }) => run(() => client.listSignRequests({ page, external_id })),
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_cancel",
     {
       description:
@@ -397,7 +458,7 @@ export function registerTools(
     async ({ uuid }) => run(() => client.cancel(uuid)),
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_resend",
     {
       description:
@@ -519,7 +580,7 @@ export function registerTools(
     async ({ page }) => run(() => client.listTeamMembers({ page })),
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_delete_document",
     {
       description:
@@ -536,7 +597,7 @@ export function registerTools(
     async ({ uuid }) => run(() => client.deleteDocument(uuid)),
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_add_document_attachment",
     {
       description:
@@ -649,37 +710,7 @@ export function registerTools(
       },
       annotations: { title: "Get signer summary", ...READ_ONLY },
     },
-    async ({ email, name_contains }) =>
-      run(async () => {
-        const lower = email.toLowerCase();
-        const search = (await client.searchDocuments({ signer_emails: lower, signer_data: true })) as AnyRec;
-        let results: AnyRec[] = search?.results ?? [];
-        if (name_contains) results = results.filter((r) => String(r.name ?? "").includes(name_contains));
-        const documents = results.map((r) => ({ uuid: r.uuid, name: r.name, status: readableStatus(r.status) }));
-        const signedHit = results.find((r) => isSignedCode(r.status));
-        const target = signedHit ?? results[0];
-        if (!target) {
-          return {
-            email: lower, status: "not_found", matched_documents: 0, documents,
-            signed_doc_uuid: null, signed_pdf_url: null, embed_url: null, fields: {},
-          };
-        }
-        const doc = (await client.getDocument(target.uuid)) as AnyRec;
-        const signer = pickSigner(doc, lower);
-        const fields = extractFields(signer);
-        return {
-          email: lower,
-          status: readableStatus(doc.status),
-          signed: !!signer?.signed,
-          matched_documents: results.length,
-          documents,
-          signed_doc_uuid: signedHit ? doc.uuid : null,
-          signed_pdf_url: signedHit ? (doc.pdf ?? null) : null,
-          embed_url: signer?.embed_url ?? null,
-          sign_date: fields.SignDate ?? null,
-          fields,
-        };
-      }),
+    async ({ email, name_contains }) => run(() => buildSignerSummary(client, email, name_contains)),
   );
 
   server.registerTool(
@@ -788,7 +819,7 @@ export function registerTools(
       }),
   );
 
-  server.registerTool(
+  writeTool(
     "signrequest_create_embedded_signing_links",
     {
       description:
@@ -854,6 +885,185 @@ export function registerTools(
           signrequest_uuid: sr.uuid ?? null,
           links,
         });
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "signrequest_campaign_status",
+    {
+      description:
+        "Roster-wide rollup: runs the signer-summary lookup for many people with bounded concurrency and returns aggregate counts (signed / pending / with-field-data) plus a per-person summary (status, signed-PDF, embed_url, filled fields). One call to drive a tracking dashboard instead of N search+get round-trips. Up to 200 emails.",
+      inputSchema: {
+        emails: z.array(z.string().email()).min(1).max(200).describe("Signer emails to roll up."),
+        name_contains: z.string().optional().describe("Scope to documents whose name contains this substring."),
+        concurrency: z.number().int().min(1).max(8).optional().describe("Parallel lookups (default 5)."),
+      },
+      annotations: { title: "Campaign status (roster rollup)", ...READ_ONLY },
+    },
+    async ({ emails, name_contains, concurrency }) =>
+      run(async () => {
+        const uniq = [...new Set(emails.map((e) => e.toLowerCase()))];
+        const people = await mapLimit(uniq, concurrency ?? 5, async (email) => {
+          try {
+            return await buildSignerSummary(client, email, name_contains);
+          } catch (e) {
+            return { email, status: "error", error: e instanceof SignRequestError ? `API ${e.status}` : String(e), fields: {} } as AnyRec;
+          }
+        });
+        const by_status: Record<string, number> = {};
+        let signed = 0, with_fields = 0, errors = 0;
+        for (const p of people) {
+          const st = String(p.status ?? "unknown");
+          by_status[st] = (by_status[st] ?? 0) + 1;
+          if (p.signed) signed++;
+          if (p.fields && Object.keys(p.fields).length) with_fields++;
+          if (st === "error") errors++;
+        }
+        return { total: people.length, signed, pending: people.length - signed - errors, with_fields, errors, by_status, people };
+      }),
+  );
+
+  server.registerTool(
+    "signrequest_list_all_documents",
+    {
+      description:
+        "Auto-paginated list of ALL documents (follows pagination so you never page by hand), returned as COMPACT summaries. Cap defaults to 500 (max 2000). Use for inventory/exports without dozens of calls.",
+      inputSchema: {
+        cap: z.number().int().min(1).max(2000).optional().describe("Max documents to return (default 500)."),
+        external_id: z.string().optional().describe("Filter by your external_id."),
+      },
+      annotations: { title: "List all documents (auto-paginated, compact)", ...READ_ONLY },
+    },
+    async ({ cap, external_id }) =>
+      run(async () => {
+        const docs = (await client.listAllDocuments({ cap: cap ?? 500, external_id })) as AnyRec[];
+        return { count: docs.length, documents: docs.map((d) => compactDoc(d)) };
+      }),
+  );
+
+  server.registerTool(
+    "signrequest_list_template_fields",
+    {
+      description:
+        "Discover a template's fillable field identifiers (external_id / prefill tags) so you know what to map when prefilling or reading values. Best-effort extraction from the template object.",
+      inputSchema: { uuid: z.string().describe("Template UUID.") },
+      annotations: { title: "List template fields", ...READ_ONLY },
+    },
+    async ({ uuid }) =>
+      run(async () => {
+        const t = (await client.getTemplate(uuid)) as AnyRec;
+        const ids = new Set<string>();
+        const collect = (arr: AnyRec[] | undefined) => {
+          for (const x of arr ?? []) if (x?.external_id) ids.add(String(x.external_id));
+        };
+        collect(t.prefill_tags as AnyRec[]);
+        for (const s of ((t.signrequest as AnyRec)?.signers as AnyRec[]) ?? []) collect(s.inputs as AnyRec[]);
+        for (const s of (t.signers as AnyRec[]) ?? []) collect(s.inputs as AnyRec[]);
+        return { uuid: t.uuid, name: t.name, url: t.url, field_ids: [...ids], prefill_tags: t.prefill_tags ?? null };
+      }),
+  );
+
+  server.registerTool(
+    "signrequest_wait_until_signed",
+    {
+      description:
+        "Poll a document until it reaches a terminal state (signed / declined / cancelled), up to a bounded timeout — convenience for 'just sent, tell me when it's done'. For long waits use webhooks/events instead. Returns the final status and signed-PDF URL if signed.",
+      inputSchema: {
+        uuid: z.string().describe("Document UUID."),
+        timeout_seconds: z.number().int().min(1).max(25).optional().describe("Max wait (default 15, hard cap 25)."),
+        interval_seconds: z.number().int().min(1).max(10).optional().describe("Poll interval (default 3)."),
+      },
+      annotations: { title: "Wait until signed (bounded poll)", readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ uuid, timeout_seconds, interval_seconds }) =>
+      run(async () => {
+        const deadline = Date.now() + Math.min(timeout_seconds ?? 15, 25) * 1000;
+        const interval = (interval_seconds ?? 3) * 1000;
+        for (;;) {
+          const doc = (await client.getDocument(uuid)) as AnyRec;
+          const code = String(doc.status ?? "");
+          if (["si", "sd", "do", "de", "ca"].includes(code)) {
+            return { uuid, done: true, status: readableStatus(code), signed_pdf_url: doc.pdf ?? null };
+          }
+          if (Date.now() + interval >= deadline) {
+            return { uuid, done: false, status: readableStatus(code), note: "Timed out; still pending. Poll again or use events." };
+          }
+          await new Promise((r) => setTimeout(r, interval));
+        }
+      }),
+  );
+
+  writeTool(
+    "signrequest_bulk_send",
+    {
+      description:
+        "Send the SAME template (or file) to many recipients as a campaign — one signature request per recipient (each gets their own copy). Bounded concurrency, per-recipient results, dry_run preview, and an `embedded` switch (no emails; returns each embed_url). For lock-up / mass-onboarding. Up to 200 recipients.",
+      inputSchema: {
+        template: z.string().url().optional().describe("Template resource URL (each recipient gets a copy)."),
+        file_from_url: z.string().url().optional().describe("Or a public file URL SignRequest downloads."),
+        recipients: z
+          .array(z.object({ email: z.string().email(), first_name: z.string().optional(), last_name: z.string().optional() }))
+          .min(1)
+          .max(200)
+          .describe("Campaign recipients."),
+        from_email: z.string().email().optional(),
+        name: z.string().optional().describe("Document name applied to each."),
+        subject: z.string().optional(),
+        message: z.string().optional(),
+        embedded: z.boolean().optional().describe("Embedded signing: NO emails sent; returns each embed_url."),
+        disable_emails: z.boolean().optional().describe("Suppress status emails (implied by embedded)."),
+        concurrency: z.number().int().min(1).max(6).optional().describe("Parallel sends (default 3)."),
+        dry_run: z.boolean().optional().describe("Preview recipients/mode without sending."),
+      },
+      annotations: { title: "Bulk send campaign", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async (a) => {
+      try {
+        if (!a.template && !a.file_from_url) throw new Error("Provide a template or file_from_url.");
+        const from_email = resolveFromEmail(a.from_email);
+        const embedded = !!a.embedded;
+        if (a.dry_run) {
+          return ok({
+            dry_run: true,
+            action: "bulk_send",
+            recipients: a.recipients.length,
+            mode: embedded ? "embedded (no emails)" : "email",
+            from_email,
+            name: a.name ?? null,
+            note: embedded
+              ? "Would create one embedded request per recipient; no emails sent."
+              : `Would email ${a.recipients.length} recipient(s). Nothing sent.`,
+          });
+        }
+        audit("bulk_send", { recipients: a.recipients.length, embedded });
+        const results = await mapLimit(a.recipients, a.concurrency ?? 3, async (r) => {
+          try {
+            const signer: Signer = { email: r.email, first_name: r.first_name, last_name: r.last_name };
+            if (embedded) signer.embed_url_user_id = r.email;
+            const resp = (await client.quickCreate({
+              template: a.template,
+              file_from_url: a.file_from_url,
+              signers: [signer],
+              from_email,
+              name: a.name,
+              subject: a.subject,
+              message: a.message,
+              disable_emails: embedded || a.disable_emails,
+            })) as AnyRec;
+            const sr = (resp.signrequest as AnyRec) ?? resp;
+            const s0 = ((sr.signers as AnyRec[]) ?? []).find(
+              (s) => String(s.email ?? "").toLowerCase() === r.email.toLowerCase(),
+            );
+            return { email: r.email, ok: true, document_uuid: resp.uuid ?? null, signrequest_uuid: sr.uuid ?? null, embed_url: s0?.embed_url ?? null };
+          } catch (e) {
+            return { email: r.email, ok: false, error: e instanceof SignRequestError ? `API ${e.status}: ${e.body.slice(0, 120)}` : String(e) };
+          }
+        });
+        const sent = results.filter((r) => r.ok).length;
+        return ok({ emails_sent: !embedded, sent, failed: results.length - sent, results });
       } catch (e) {
         return fail(e instanceof Error ? e.message : String(e));
       }

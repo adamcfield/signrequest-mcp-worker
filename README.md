@@ -2,7 +2,7 @@
 
 The [SignRequest](https://signrequest.com) e-signature API exposed as a **remote [MCP](https://modelcontextprotocol.io) server**, running as a **Cloudflare Worker** (Streamable HTTP + SSE). Built on the [`agents`](https://github.com/cloudflare/agents) `McpAgent`.
 
-It exposes **twenty-seven tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, read documents, templates, events & teams, plus high-level helpers (one-shot signer summaries, flat field extraction, batch reads) and a safe no-email signing-link generator. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
+It exposes **thirty-two tools** for the document-signing workflow — create & send signature requests, track, cancel/remind, delete, attach files, read documents, templates, events & teams — plus enterprise extras the raw API lacks: one-shot signer summaries, **roster-wide campaign rollups**, **bulk send**, flat field extraction, batch + auto-paginated reads, bounded polling, and a safe no-email signing-link generator. The tool definitions live in [`src/tools.ts`](src/tools.ts) and the SignRequest REST client in [`src/signrequest.ts`](src/signrequest.ts); both are transport-agnostic, so every build shares an identical tool surface.
 
 This repo ships **two deployments from the same code**:
 
@@ -25,6 +25,7 @@ This repo ships **two deployments from the same code**:
 - [Configuration](#configuration)
 - [Deploy](#deploy)
 - [Verify](#verify)
+- [Testing](#testing)
 - [Connect a client](#connect-a-client) — [Claude Code](#claude-code) · [Claude Desktop](#claude-desktop) · [Claude Web](#claude-web) · [Programmatic](#programmatic)
 - [OAuth worker (Claude.ai web)](#oauth-worker-claudeai-web)
 - [Caveats](#caveats)
@@ -163,6 +164,24 @@ These compose the raw endpoints into a single call each — they encode the "fin
 
 **Safety flags:** `quick_create` / `send` / `resend` accept `dry_run` (preview who *would* be emailed, send nothing); `quick_create` accepts `disable_emails`; `get_document` accepts `compact`.
 
+### Campaign-scale & operations
+
+Built on top of the API with bounded concurrency, auto-pagination, and polling — for roster-wide workflows and large accounts.
+
+| Tool | Purpose | Input | Class |
+|------|---------|-------|-------|
+| `signrequest_campaign_status` | **Roster rollup** — runs the signer summary for many people (bounded concurrency) and returns aggregate counts + per-person status/fields. One call drives a tracking dashboard. | `emails[]`, `name_contains?`, `concurrency?` | read-only |
+| `signrequest_bulk_send` | **Bulk campaign** — sends the same template/file to many recipients (one request each); per-recipient results, `dry_run`, and an `embedded` switch (no emails, returns embed_urls) | `template`/`file_from_url`, `recipients[]`, … | write |
+| `signrequest_list_all_documents` | Auto-paginated, compact list of all documents (no manual paging) | `cap?`, `external_id?` | read-only |
+| `signrequest_list_template_fields` | Discover a template's fillable `external_id`s / prefill tags | `uuid` | read-only |
+| `signrequest_wait_until_signed` | Bounded poll until signed/declined/cancelled (≤25s); for long waits use webhooks/events | `uuid`, `timeout_seconds?`, `interval_seconds?` | read-only |
+
+### Operational modes
+
+- **Read-only deploys.** Set `MCP_READONLY=true` and the worker registers **only read tools** — no `quick_create`/`send`/`bulk_send`/`cancel`/`delete`, and they never appear in `tools/list`. Right for a reporting/dashboard connector.
+- **Audit trail.** Every state-changing API call is logged (`[signrequest-mcp] POST /signrequests/` — method + path only, no PII), visible via `wrangler tail`.
+- **Resilience.** Idempotent GETs retry on `429`/`5xx` with `Retry-After`-aware backoff; writes never auto-retry; batch tools use bounded concurrency so they don't trip the rate limiter.
+
 ### Signer object
 
 Used by `signrequest_quick_create` and `signrequest_send`:
@@ -232,6 +251,7 @@ Set via `npx wrangler secret put <NAME>` (secrets) or a `[vars]` block (non-secr
 | `SIGNREQUEST_FROM_EMAIL` | both | optional | Default sender, so callers can omit `from_email` |
 | `SIGNREQUEST_BASE_URL` | both | optional | Override API base (default `https://signrequest.com/api/v1`) |
 | `SIGNREQUEST_MAX_RETRIES` | both | optional | Max retries for idempotent calls (default `3`) |
+| `MCP_READONLY` | both | optional | `true` ⇒ register read tools only (no create/send/bulk/cancel/delete) |
 
 ---
 
@@ -354,6 +374,16 @@ npx wrangler deploy -c wrangler.oauth.jsonc
 
 ---
 
+## Testing
+
+```bash
+npm run typecheck   # tsc --noEmit (strict)
+npm test            # vitest — client (retry/backoff/pagination, no-retry-on-POST), helpers, signer summary
+npm run smoke       # live smoke vs a deployed worker (set MCP_URL + MCP_TOKEN)
+```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck + tests on every push and PR. The client is fully unit-testable with a mocked `fetch` (injectable `backoffBaseMs` keeps retry tests fast); the pure helpers and the signer-summary composition are tested against fixtures.
+
 ## Caveats
 
 - **Existing-token-only.** SignRequest is owned by Box and is in maintenance mode; this assumes you already have a working team API token.
@@ -369,10 +399,14 @@ npx wrangler deploy -c wrangler.oauth.jsonc
 src/
   index.ts        Bearer worker entry — routing, bearer gate, McpAgent/Durable Object
   oauth.ts        OAuth worker entry — OAuthProvider + passphrase consent + McpAgent
-  tools.ts        registerTools() — the 27 tool definitions + Zod schemas (shared)
-  signrequest.ts  SignRequestClient — dependency-free REST client, fetch-only (shared)
+  tools.ts        registerTools() — the 32 tool definitions + Zod schemas + helpers (shared)
+  signrequest.ts  SignRequestClient — dependency-free REST client, fetch-only, mapLimit/pagination (shared)
   ai-stub.ts      stubs the unused `ai` peer dep out of the bundle
+tests/            vitest unit tests (client retry/backoff/pagination, helpers, signer summary)
+vitest.config.ts  test config (resolves NodeNext .js specifiers to .ts)
+scripts/smoke.mjs smoke test against a deployed worker (npm run smoke)
+.github/workflows/ci.yml  CI — typecheck + tests on push/PR
 wrangler.jsonc        bearer worker config (signrequest-mcp)
 wrangler.oauth.jsonc  OAuth worker config (signrequest-mcp-oauth) — adds OAUTH_KV
-package.json          pinned deps (SDK 1.23.0, agents ^0.2.0, zod, workers-oauth-provider, wrangler)
+package.json          pinned deps (SDK 1.23.0, agents ^0.2.0, zod, workers-oauth-provider, wrangler, vitest)
 ```
