@@ -281,7 +281,7 @@ Set via `npx wrangler secret put <NAME>` (secrets) or a `[vars]` block (non-secr
 | `MCP_AUTH_TOKEN` | bearer | ✅ | Shared bearer clients send as `Authorization: Bearer <…>` |
 | `SR_CLIENT_ID`, `SR_CLIENT_SECRET` | oauth | login mode | SignRequest OAuth2 application — turns on SignRequest login |
 | `APP_PASSPHRASE` | oauth | passphrase mode | Passphrase entered on the OAuth consent screen |
-| `SIGNREQUEST_TEAM` | oauth | optional | Team subdomain; calls go to `https://<team>.signrequest.com/api/v1` for team context |
+| `SIGNREQUEST_TEAM` | oauth | **needed for login mode** | Team subdomain (var in `wrangler.oauth.jsonc`); calls go to `https://<team>.signrequest.com/api/v1`. Without it a login token sees no events, gets 403 on the audit log, and only sees documents tied to the user |
 | `OAUTH_KV` (binding) | oauth | ✅ | KV namespace storing OAuth grants/registrations |
 | `SIGNREQUEST_FROM_EMAIL` | both | optional | Default sender, so callers can omit `from_email` |
 | `SIGNREQUEST_BASE_URL` | both | optional | Override API base (default `https://signrequest.com/api/v1`) |

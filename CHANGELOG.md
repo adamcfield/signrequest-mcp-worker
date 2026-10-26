@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.2 — Team context for SignRequest login
+
+### Changed
+- OAuth worker pins `SIGNREQUEST_TEAM=voltasolar` (`wrangler.oauth.jsonc` vars). A SignRequest login spans every team the user belongs to, and without a team host it sees **no** events, a 403 audit log and only user-owned documents; via `https://voltasolar.signrequest.com/api/v1` it sees all 83k events, the audit log and API-created documents.
+- `webhook_health` scans 100 events per page (was 10), reports `oldest_event_scanned`, and returns a `warnings` entry instead of an all-clear when no events are visible.
+- OAuth worker: passphrase sign-in and the shared `SIGNREQUEST_TOKEN` retired — SignRequest login only.
+
 ## 1.5.1 — Dependency security upgrade
 
 ### Changed

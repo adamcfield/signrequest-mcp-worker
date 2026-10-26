@@ -13,6 +13,9 @@
   "kv_namespaces": [
     { "binding": "OAUTH_KV", "id": "78bea39d621541e997a7c8e3e360c9f4" }
   ],
+  // Team context: API calls go to https://voltasolar.signrequest.com/api/v1 (a SignRequest
+  // login spans every team the user belongs to; this pins the connector to one).
+  "vars": { "SIGNREQUEST_TEAM": "voltasolar" },
   "alias": { "ai": "./src/ai-stub.ts" },
   "observability": { "enabled": true }
 }

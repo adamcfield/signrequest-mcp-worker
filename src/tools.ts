@@ -220,7 +220,7 @@ function validateDocSource(a: {
 }
 
 /** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
-export const VERSION = "1.5.1";
+export const VERSION = "1.5.2";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
@@ -722,7 +722,13 @@ export function registerTools(
       description:
         "Webhook diagnostics in one call: every subscription, the team-level events_callback_url, and recent event deliveries grouped by the receiver's HTTP status code — with failed deliveries listed (event, document, signer, code, timestamp). Note SignRequest's log does not record WHICH callback URL each event went to. Use when callbacks are missing or a receiver returns 4xx/5xx.",
       inputSchema: {
-        pages: z.number().int().positive().max(10).optional().describe("Pages of the event log to scan (default 3)."),
+        pages: z
+          .number()
+          .int()
+          .positive()
+          .max(20)
+          .optional()
+          .describe("Pages of 100 events to scan, newest first (default 3 = last 300 events)."),
       },
       annotations: { title: "Webhook health", ...READ_ONLY },
     },
@@ -734,7 +740,7 @@ export function registerTools(
         ]);
         const events: AnyRec[] = [];
         for (let page = 1; page <= (pages ?? 3); page++) {
-          const res = (await client.listEvents({ page })) as AnyRec;
+          const res = (await client.listEvents({ page, limit: 100 })) as AnyRec;
           events.push(...((res?.results as AnyRec[]) ?? []));
           if (!res?.next) break;
         }
@@ -758,7 +764,15 @@ export function registerTools(
           document_uuid: e.document?.uuid ?? null,
           signer: e.signer?.email ?? null,
         }));
+        const warnings: string[] = [];
+        if (events.length === 0) {
+          warnings.push(
+            "No events visible: this token can't read the team's event log (SignRequest scopes /events/ to the team). Deliveries may still be failing — check the team context (SIGNREQUEST_TEAM) or use a team API token.",
+          );
+        }
         return {
+          ...(warnings.length ? { warnings } : {}),
+          oldest_event_scanned: events.at(-1)?.timestamp ?? null,
           team_callbacks: ((teams?.results as AnyRec[]) ?? []).map((t) => ({
             team: t.subdomain,
             events_callback_url: t.events_callback_url ?? null,

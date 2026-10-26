@@ -174,3 +174,24 @@ describe("list_api_tokens", () => {
     expect(JSON.parse(text).results[0]).toMatchObject({ name: "ci", key_last4: "6789" });
   });
 });
+
+describe("webhook_health visibility", () => {
+  it("warns instead of looking healthy when no events are visible", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ count: 0, next: null, results: [] }), { status: 200 })),
+    );
+    const { server, tools } = fakeServer();
+    registerTools(server, new SignRequestClient({ token: "t" }));
+    const out = JSON.parse((await tools.get("signrequest_webhook_health")!.handler({})).content[0].text);
+    expect(out.warnings?.[0]).toMatch(/No events visible/);
+  });
+
+  it("scans the event log 100 at a time", async () => {
+    const calls = capture({ count: 0, next: null, results: [] });
+    const { server, tools } = fakeServer();
+    registerTools(server, new SignRequestClient({ token: "t" }));
+    await tools.get("signrequest_webhook_health")!.handler({});
+    expect(calls.some((c) => c.url.endsWith("/events/?page=1&limit=100"))).toBe(true);
+  });
+});
