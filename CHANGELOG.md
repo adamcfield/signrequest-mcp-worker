@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0 — Webhooks, full API coverage, SignRequest login
+
+### Added
+- **Webhook subscriptions** (`/webhooks/`): `list_webhooks`, `get_webhook`, `create_webhook`, `update_webhook` (PATCH, or PUT with `replace`), `delete_webhook`, plus `webhook_health` — subscriptions, team callback URL and recent deliveries by HTTP status with failures listed.
+- **Rest of the API spec**: `forward_signer`, `get_team`, `create_team`, `update_team`, `delete_team` (needs `confirm_subdomain`), `invite_team_member`, `get_team_member`, `list_audit_events`, `list_api_tokens` (keys redacted). Every operation in the v1 spec now has a tool — 47 tools.
+- **SignRequest login for the OAuth worker**: with `SR_CLIENT_ID`/`SR_CLIENT_SECRET` set, Connect goes through SignRequest's own OAuth2 login; each user acts with their own token (`Bearer`), refreshed upstream on every Claude token refresh and picked up by running sessions. Passphrase mode remains the fallback. Optional `SIGNREQUEST_TEAM` for team context.
+- `dry_run` on every new write tool; version shown in both health checks.
+
+### Fixed
+- OAuth consent screen: UTF-8-safe encoding of the auth request (non-Latin `state` broke `/authorize`).
+- CI: `package-lock.json` resynced — `npm ci` had failed on every run since 1.4.0.
+
 ## 1.4.0 — Dependency upgrade (security)
 
 ### Changed

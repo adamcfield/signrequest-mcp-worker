@@ -61,6 +61,21 @@ const NEW_TOOLS = [
   "signrequest_list_all_documents",
   "signrequest_list_template_fields",
   "signrequest_wait_until_signed",
+  "signrequest_list_webhooks",
+  "signrequest_get_webhook",
+  "signrequest_create_webhook",
+  "signrequest_update_webhook",
+  "signrequest_delete_webhook",
+  "signrequest_webhook_health",
+  "signrequest_get_team",
+  "signrequest_get_team_member",
+  "signrequest_create_team",
+  "signrequest_update_team",
+  "signrequest_delete_team",
+  "signrequest_invite_team_member",
+  "signrequest_forward_signer",
+  "signrequest_list_audit_events",
+  "signrequest_list_api_tokens",
 ];
 
 const init = await rpc({
@@ -72,7 +87,7 @@ await rpc({ jsonrpc: "2.0", method: "notifications/initialized" });
 
 const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
 const tools = list.body?.result?.tools ?? [];
-check("tools/list", tools.length >= 32, `(${tools.length} tools)`);
+check("tools/list", tools.length >= 47, `(${tools.length} tools)`);
 for (const t of NEW_TOOLS) check(`tool present: ${t}`, tools.some((x) => x.name === t));
 
 const who = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "signrequest_whoami", arguments: {} } });

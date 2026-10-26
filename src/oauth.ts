@@ -5,27 +5,34 @@
  * OAuth 2.1 provider (@cloudflare/workers-oauth-provider) so it can be added to
  * Claude.ai as a custom connector (Claude.ai web requires OAuth, not a bearer).
  *
- * Access is gated by a single shared passphrase (APP_PASSPHRASE) entered on the
- * consent screen — single-user by design.
+ * Two sign-in modes, picked by which secrets are set:
+ *   - SignRequest login (SR_CLIENT_ID + SR_CLIENT_SECRET): /authorize hands off to
+ *     SignRequest's own OAuth2 login; each user acts with their own SignRequest
+ *     access token, refreshed upstream whenever Claude refreshes ours.
+ *   - Passphrase (fallback): a single shared APP_PASSPHRASE on the consent screen,
+ *     acting with the team-scoped SIGNREQUEST_TOKEN.
  *
  * Routes:
  *   GET  /                         health check (no auth)
- *   GET/POST /authorize            passphrase consent screen   (this file)
+ *   GET/POST /authorize            SignRequest hand-off or passphrase screen (this file)
+ *   GET  /callback                 SignRequest OAuth2 redirect target (this file)
  *   /token, /register, /.well-known/oauth-*   handled by OAuthProvider
  *   POST /mcp · GET /sse           MCP transports (OAuth-protected)
  *
  * Secrets (wrangler secret put ... -c wrangler.oauth.jsonc):
- *   SIGNREQUEST_TOKEN  team-scoped SignRequest API token
- *   APP_PASSPHRASE     passphrase that authorizes the connector
- * Optional: SIGNREQUEST_FROM_EMAIL, SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
+ *   SR_CLIENT_ID, SR_CLIENT_SECRET   SignRequest OAuth2 application (login mode)
+ *   SIGNREQUEST_TOKEN, APP_PASSPHRASE   passphrase mode
+ * Optional: SIGNREQUEST_TEAM (team subdomain for team context), SIGNREQUEST_FROM_EMAIL,
+ *   SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
  */
 
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
+import { env as workerEnv } from "cloudflare:workers";
+import OAuthProvider, { OAuthError } from "@cloudflare/workers-oauth-provider";
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SignRequestClient } from "./signrequest.js";
-import { registerTools } from "./tools.js";
+import { registerTools, VERSION } from "./tools.js";
 
 // Reuses the bearer worker's global Cloudflare.Env (MCP_OBJECT, SIGNREQUEST_TOKEN,
 // SIGNREQUEST_FROM_EMAIL, etc.) and adds the OAuth-specific bindings.
@@ -34,19 +41,43 @@ interface Env extends Cloudflare.Env {
   /** Injected by OAuthProvider. */
   OAUTH_PROVIDER: OAuthHelpers;
   APP_PASSPHRASE: string;
+  SR_CLIENT_ID?: string;
+  SR_CLIENT_SECRET?: string;
+  /** Team subdomain: API calls go to https://<team>.signrequest.com/api/v1 for team context. */
+  SIGNREQUEST_TEAM?: string;
 }
 
-type Props = { user: string };
+/** Passphrase grants carry only `user`; SignRequest-login grants carry the upstream tokens. */
+type Props = {
+  user: string;
+  accessToken?: string;
+  refreshToken?: string;
+  /** Epoch ms when accessToken expires. */
+  expiresAt?: number;
+};
+
+const SR_OAUTH = "https://signrequest.com/api/v1/oauth2";
+const STATE_TTL_SECONDS = 600;
+
+const loginMode = (env: Env): boolean => !!(env.SR_CLIENT_ID && env.SR_CLIENT_SECRET);
+
+function apiBaseUrl(env: Env): string | undefined {
+  if (env.SIGNREQUEST_BASE_URL) return env.SIGNREQUEST_BASE_URL;
+  return env.SIGNREQUEST_TEAM ? `https://${env.SIGNREQUEST_TEAM}.signrequest.com/api/v1` : undefined;
+}
 type AuthRequest = Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>>;
 
 /** The MCP agent — identical tool surface to the bearer worker. */
 export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
-  server = new McpServer({ name: "signrequest", version: "1.4.0" });
+  server = new McpServer({ name: "signrequest", version: VERSION });
 
   async init(): Promise<void> {
+    const oauth = !!this.props?.accessToken;
     const client = new SignRequestClient({
-      token: this.env.SIGNREQUEST_TOKEN,
-      baseUrl: this.env.SIGNREQUEST_BASE_URL,
+      // Read per request so a token refreshed mid-session (see setName) is used.
+      token: () => this.props?.accessToken ?? this.env.SIGNREQUEST_TOKEN,
+      authScheme: oauth ? "Bearer" : "Token",
+      baseUrl: apiBaseUrl(this.env),
       maxRetries: this.env.SIGNREQUEST_MAX_RETRIES
         ? Number(this.env.SIGNREQUEST_MAX_RETRIES)
         : undefined,
@@ -55,6 +86,15 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
       defaultFromEmail: this.env.SIGNREQUEST_FROM_EMAIL,
       readOnly: this.env.MCP_READONLY === "true",
     });
+  }
+
+  // Props normally reach the agent only once, at start. Every request re-sends the
+  // current grant's props here, so pick up a refreshed SignRequest token immediately.
+  override async setName(name: string, props?: Props): Promise<void> {
+    await super.setName(name, props);
+    if (props?.accessToken && props.accessToken !== this.props?.accessToken) {
+      await this.updateProps(props);
+    }
   }
 }
 
@@ -139,6 +179,111 @@ async function clientName(env: Env, clientId: string): Promise<string> {
   }
 }
 
+function errorPage(message: string, status = 400): Response {
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SignRequest MCP</title><body style="font:16px system-ui;padding:32px;max-width:520px;margin:auto"><h1 style="font-size:18px">Couldn't connect to SignRequest</h1><p>${escapeHtml(message)}</p><p>Close this tab and try connecting again from Claude.</p></body>`,
+    { status, headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
+type SrTokenResponse = {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+};
+
+/** Call SignRequest's token endpoint (authorization_code or refresh_token grant). */
+async function srToken(env: Env, params: Record<string, string>): Promise<SrTokenResponse> {
+  const res = await fetch(`${SR_OAUTH}/token/`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: new URLSearchParams({
+      ...params,
+      client_id: env.SR_CLIENT_ID ?? "",
+      client_secret: env.SR_CLIENT_SECRET ?? "",
+    }),
+  });
+  const text = await res.text();
+  if (res.status === 400 || res.status === 401) {
+    throw new OAuthError("invalid_grant", { description: `SignRequest token endpoint: ${text.slice(0, 200)}` });
+  }
+  if (!res.ok) {
+    throw new OAuthError("temporarily_unavailable", {
+      description: `SignRequest token endpoint returned ${res.status}`,
+      statusCode: 503,
+    });
+  }
+  const json = JSON.parse(text) as SrTokenResponse;
+  if (!json.access_token) throw new OAuthError("server_error", { description: "SignRequest returned no access_token" });
+  return json;
+}
+
+function propsFromToken(t: SrTokenResponse, previous?: Props): Props {
+  return {
+    user: previous?.user ?? "signrequest",
+    accessToken: t.access_token,
+    // Some servers don't rotate refresh tokens; keep the old one if none is returned.
+    refreshToken: t.refresh_token ?? previous?.refreshToken,
+    expiresAt: Date.now() + (t.expires_in ?? 36000) * 1000,
+  };
+}
+
+/** Our access token must expire before SignRequest's, so Claude's refresh drives the upstream refresh. */
+const ttlFor = (t: SrTokenResponse): number => Math.max(60, (t.expires_in ?? 36000) - 300);
+
+/** Login mode: stash Claude's auth request under a random state and hand off to SignRequest. */
+async function redirectToSignRequest(request: Request, env: Env, reqInfo: AuthRequest): Promise<Response> {
+  const state = crypto.randomUUID();
+  await env.OAUTH_KV.put(`sr_state:${state}`, JSON.stringify(reqInfo), { expirationTtl: STATE_TTL_SECONDS });
+  const url = new URL(`${SR_OAUTH}/authorize/`);
+  url.searchParams.set("client_id", env.SR_CLIENT_ID ?? "");
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "read write");
+  url.searchParams.set("state", state);
+  url.searchParams.set("redirect_uri", `${new URL(request.url).origin}/callback`);
+  return Response.redirect(url.toString(), 302);
+}
+
+async function handleCallback(request: Request, env: Env): Promise<Response> {
+  if (!loginMode(env)) return new Response("Not found", { status: 404 });
+  const url = new URL(request.url);
+  const state = url.searchParams.get("state") ?? "";
+  const stored = state ? await env.OAUTH_KV.get(`sr_state:${state}`) : null;
+  if (!stored) return errorPage("The sign-in request expired or was already used.");
+  await env.OAUTH_KV.delete(`sr_state:${state}`);
+  const reqInfo = JSON.parse(stored) as AuthRequest;
+
+  const upstreamError = url.searchParams.get("error");
+  if (upstreamError) {
+    return errorPage(
+      upstreamError === "access_denied" ? "Access was not granted in SignRequest." : `SignRequest returned: ${upstreamError}`,
+    );
+  }
+  const code = url.searchParams.get("code");
+  if (!code) return errorPage("SignRequest did not return an authorization code.");
+
+  let token: SrTokenResponse;
+  try {
+    token = await srToken(env, {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: `${url.origin}/callback`,
+    });
+  } catch (e) {
+    return errorPage(e instanceof Error ? e.message : "Token exchange failed.", 502);
+  }
+
+  const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+    request: reqInfo,
+    userId: `signrequest:${crypto.randomUUID()}`,
+    metadata: { label: "SignRequest login" },
+    scope: reqInfo.scope ?? [],
+    props: propsFromToken(token),
+  });
+  return Response.redirect(redirectTo, 302);
+}
+
 async function handleAuthorize(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET") {
     let reqInfo: AuthRequest;
@@ -148,10 +293,11 @@ async function handleAuthorize(request: Request, env: Env): Promise<Response> {
       return new Response("Invalid OAuth request", { status: 400 });
     }
     if (!reqInfo.clientId) return new Response("Invalid OAuth request", { status: 400 });
+    if (loginMode(env)) return redirectToSignRequest(request, env, reqInfo);
     return consentPage(reqInfo, await clientName(env, reqInfo.clientId), null);
   }
 
-  if (request.method === "POST") {
+  if (request.method === "POST" && !loginMode(env)) {
     let reqInfo: AuthRequest;
     let passphrase: string;
     try {
@@ -186,8 +332,10 @@ const defaultHandler = {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
+    if (url.pathname === "/callback" && request.method === "GET") return handleCallback(request, env);
     if (url.pathname === "/" && request.method === "GET") {
-      return new Response("signrequest-mcp-oauth worker: ok (OAuth-gated MCP at /mcp)", {
+      const mode = loginMode(env) ? "SignRequest login" : "passphrase";
+      return new Response(`signrequest-mcp-oauth worker: ok (v${VERSION}, sign-in: ${mode}, OAuth-gated MCP at /mcp)`, {
         status: 200,
         headers: { "content-type": "text/plain" },
       });
@@ -205,4 +353,19 @@ export default new OAuthProvider({
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
+  // Login mode: match our token lifetime to SignRequest's, and refresh SignRequest's
+  // token each time Claude refreshes ours. Passphrase grants have no upstream token.
+  tokenExchangeCallback: async ({ grantType, props }) => {
+    const p = props as Props;
+    if (!p?.refreshToken) return;
+    if (grantType === "authorization_code") {
+      const remaining = Math.floor(((p.expiresAt ?? 0) - Date.now()) / 1000);
+      return { accessTokenTTL: Math.max(60, remaining - 300) };
+    }
+    if (grantType === "refresh_token") {
+      const t = await srToken(workerEnv as unknown as Env, { grant_type: "refresh_token", refresh_token: p.refreshToken });
+      const next = propsFromToken(t, p);
+      return { newProps: next, accessTokenProps: next, accessTokenTTL: ttlFor(t) };
+    }
+  },
 });

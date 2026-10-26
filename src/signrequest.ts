@@ -115,18 +115,61 @@ export interface QuickCreateParams extends DocumentParams {
 
 export interface ListQuery {
   page?: number;
+  limit?: number;
   external_id?: string;
 }
 
+/** Webhook event types accepted by /webhooks/ (from the SignRequest OpenAPI spec). */
+export const WEBHOOK_EVENT_TYPES = [
+  "convert_error", "converted", "sending_error", "sent", "declined", "cancelled", "expired",
+  "signed", "viewed", "downloaded", "signer_signed", "signer_email_bounced", "signer_viewed_email",
+  "signer_viewed", "signer_forwarded", "signer_downloaded", "signrequest_received",
+  "login_failed", "login_successful", "password_reset_request_sent", "password_reset_request_error",
+] as const;
+export const WEBHOOK_INTEGRATIONS = ["mfiles", "salesforce", "formdesk", "zapier", "microsoft-flow"] as const;
+
+export interface WebhookParams {
+  event_type: (typeof WEBHOOK_EVENT_TYPES)[number];
+  callback_url: string;
+  name?: string | null;
+  integration?: (typeof WEBHOOK_INTEGRATIONS)[number] | null;
+}
+
+export interface TeamParams {
+  name?: string;
+  subdomain?: string;
+  phone?: string;
+  primary_color?: string;
+  events_callback_url?: string;
+  documents_as_attachments?: boolean;
+}
+
+export interface AuditEventQuery {
+  page?: number;
+  limit?: number;
+  user_email?: string;
+  user_ip?: string;
+  event_type?: string;
+  status?: "success" | "error";
+  timestamp__date__lt?: string;
+  timestamp__date__lte?: string;
+  timestamp__date__gt?: string;
+  timestamp__date__gte?: string;
+}
+
 export class SignRequestClient {
-  private token: string;
+  private token: string | (() => string);
+  private authScheme: "Token" | "Bearer";
   private baseUrl: string;
   private maxRetries: number;
   private timeoutMs: number;
   private backoffBaseMs: number;
 
   constructor(opts: {
-    token: string;
+    /** API token, or a getter so a refreshed OAuth token is picked up on every request. */
+    token: string | (() => string);
+    /** "Token" for team API tokens (default), "Bearer" for SignRequest OAuth2 access tokens. */
+    authScheme?: "Token" | "Bearer";
     baseUrl?: string;
     /** Max retry attempts for transient failures on idempotent (GET) calls. Default 3. */
     maxRetries?: number;
@@ -137,6 +180,7 @@ export class SignRequestClient {
   }) {
     if (!opts.token) throw new Error("SignRequestClient requires an API token");
     this.token = opts.token;
+    this.authScheme = opts.authScheme ?? "Token";
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.maxRetries = opts.maxRetries ?? 3;
     this.timeoutMs = opts.timeoutMs ?? 30000;
@@ -157,12 +201,12 @@ export class SignRequestClient {
   }
 
   private async request<T = unknown>(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
   ): Promise<T> {
     const headers: Record<string, string> = {
-      Authorization: `Token ${this.token}`,
+      Authorization: `${this.authScheme} ${typeof this.token === "function" ? this.token() : this.token}`,
       Accept: "application/json",
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -217,6 +261,7 @@ export class SignRequestClient {
     if (!q) return "";
     const params = new URLSearchParams();
     if (q.page !== undefined) params.set("page", String(q.page));
+    if (q.limit !== undefined) params.set("limit", String(q.limit));
     if (q.external_id) params.set("external_id", q.external_id);
     const s = params.toString();
     return s ? `?${s}` : "";
@@ -256,6 +301,12 @@ export class SignRequestClient {
   resend(uuid: string) {
     return this.request("POST", `/signrequests/${uuid}/resend_signrequest_email/`, {});
   }
+  forwardSigner(
+    uuid: string,
+    params: { signer_email_to_forward: string; signer_email_to_forward_to: string; forwarded_reason?: string },
+  ) {
+    return this.request("POST", `/signrequests/${uuid}/forward_signer/`, params);
+  }
 
   // ---- Templates ----
   listTemplates(query?: ListQuery) {
@@ -279,6 +330,61 @@ export class SignRequestClient {
   }
   listTeamMembers(query?: ListQuery) {
     return this.request("GET", `/team-members/${this.buildQuery(query)}`);
+  }
+  getTeamMember(uuid: string) {
+    return this.request("GET", `/team-members/${uuid}/`);
+  }
+  getTeam(subdomain: string) {
+    return this.request("GET", `/teams/${encodeURIComponent(subdomain)}/`);
+  }
+  createTeam(params: TeamParams & { name: string; subdomain: string }) {
+    return this.request("POST", "/teams/", params);
+  }
+  updateTeam(subdomain: string, params: TeamParams) {
+    return this.request("PATCH", `/teams/${encodeURIComponent(subdomain)}/`, params);
+  }
+  /** Delete a team. Irreversible. */
+  deleteTeam(subdomain: string) {
+    return this.request("DELETE", `/teams/${encodeURIComponent(subdomain)}/`);
+  }
+  inviteTeamMember(subdomain: string, params: { email: string; is_admin?: boolean; is_owner?: boolean }) {
+    return this.request("POST", `/teams/${encodeURIComponent(subdomain)}/invite_member/`, params);
+  }
+
+  // ---- Webhook subscriptions ----
+  listWebhooks(query?: ListQuery) {
+    return this.request("GET", `/webhooks/${this.buildQuery(query)}`);
+  }
+  getWebhook(uuid: string) {
+    return this.request("GET", `/webhooks/${uuid}/`);
+  }
+  createWebhook(params: WebhookParams) {
+    return this.request("POST", "/webhooks/", params);
+  }
+  /** PATCH (partial) by default; `replace` uses PUT, which needs event_type + callback_url. */
+  updateWebhook(uuid: string, params: Partial<WebhookParams>, replace = false) {
+    return this.request(replace ? "PUT" : "PATCH", `/webhooks/${uuid}/`, params);
+  }
+  /** Delete a webhook subscription. Irreversible. */
+  deleteWebhook(uuid: string) {
+    return this.request("DELETE", `/webhooks/${uuid}/`);
+  }
+  /** Every webhook subscription, following pagination. */
+  listAllWebhooks(cap = 500): Promise<unknown[]> {
+    return this.paginate((page) => this.listWebhooks({ page, limit: 100 }), cap);
+  }
+
+  // ---- Audit log & API tokens ----
+  listAuditEvents(query: AuditEventQuery = {}) {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+    }
+    const s = params.toString();
+    return this.request("GET", `/audit-events/${s ? `?${s}` : ""}`);
+  }
+  listApiTokens(query?: ListQuery) {
+    return this.request("GET", `/api-tokens/${this.buildQuery(query)}`);
   }
 
   // ---- Document attachments ----

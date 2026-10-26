@@ -7,7 +7,14 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { SignRequestClient, SignRequestError, mapLimit, type Signer } from "./signrequest.js";
+import {
+  SignRequestClient,
+  SignRequestError,
+  mapLimit,
+  WEBHOOK_EVENT_TYPES,
+  WEBHOOK_INTEGRATIONS,
+  type Signer,
+} from "./signrequest.js";
 
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -102,6 +109,12 @@ export function compactDoc(doc: AnyRec): AnyRec {
       embed_url: s.embed_url ?? null,
     })),
   };
+}
+
+/** Strip secrets from an /api-tokens/ row: never expose the key (or a password) to the model. */
+export function redactApiToken(t: AnyRec): AnyRec {
+  const { key, password: _password, ...rest } = t ?? {};
+  return { ...rest, key_last4: typeof key === "string" && key.length > 8 ? key.slice(-4) : null };
 }
 
 /** Build a one-shot signer summary (shared by get_signer_summary + campaign_status). */
@@ -205,6 +218,9 @@ function validateDocSource(a: {
     throw new Error("file_from_content_name is required when file_from_content is provided.");
   }
 }
+
+/** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
+export const VERSION = "1.5.0";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
@@ -578,6 +594,349 @@ export function registerTools(
       annotations: { title: "List team members", ...READ_ONLY },
     },
     async ({ page }) => run(() => client.listTeamMembers({ page })),
+  );
+
+  // ---- Webhook subscriptions (/webhooks/) ----
+
+  server.registerTool(
+    "signrequest_list_webhooks",
+    {
+      description:
+        "List the webhook SUBSCRIPTIONS configured for the team (event_type -> callback_url, name, integration). This is the subscription config, not the delivery log — use signrequest_list_events or signrequest_webhook_health for deliveries. Set all=true to follow every page.",
+      inputSchema: {
+        page: z.number().int().positive().optional(),
+        limit: z.number().int().positive().max(100).optional().describe("Results per page."),
+        all: z.boolean().optional().describe("Follow pagination and return every subscription."),
+      },
+      annotations: { title: "List webhook subscriptions", ...READ_ONLY },
+    },
+    async ({ page, limit, all }) =>
+      run(async () => {
+        if (!all) return client.listWebhooks({ page, limit });
+        const results = await client.listAllWebhooks();
+        return { count: results.length, results };
+      }),
+  );
+
+  server.registerTool(
+    "signrequest_get_webhook",
+    {
+      description: "Get a single webhook subscription by UUID.",
+      inputSchema: { uuid: z.string().describe("Webhook subscription UUID.") },
+      annotations: { title: "Get webhook subscription", ...READ_ONLY },
+    },
+    async ({ uuid }) => run(() => client.getWebhook(uuid)),
+  );
+
+  writeTool(
+    "signrequest_create_webhook",
+    {
+      description:
+        "Subscribe a callback URL to one webhook event type for the token's team (the team is implied by the token / team subdomain, it can't be set). One subscription per event type — call once per event. Use dry_run to preview.",
+      inputSchema: {
+        event_type: z.enum(WEBHOOK_EVENT_TYPES).describe("Event to subscribe to."),
+        callback_url: z.string().url().max(2100).describe("HTTPS endpoint SignRequest POSTs the event to."),
+        name: z.string().max(255).optional().describe("Optional label to identify the subscription."),
+        integration: z.enum(WEBHOOK_INTEGRATIONS).optional().describe("Only for SignRequest-supported integrations."),
+        dry_run: z.boolean().optional().describe("Preview only: return the payload without creating anything."),
+      },
+      annotations: {
+        title: "Create webhook subscription",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ dry_run, ...params }) =>
+      dry_run ? ok({ dry_run: true, would_create: params }) : run(() => client.createWebhook(params)),
+  );
+
+  writeTool(
+    "signrequest_update_webhook",
+    {
+      description:
+        "Update a webhook subscription. Partial update (PATCH) by default — pass only the fields to change. Set replace=true for a full replace (PUT), which requires event_type and callback_url. Use dry_run to preview.",
+      inputSchema: {
+        uuid: z.string().describe("Webhook subscription UUID."),
+        event_type: z.enum(WEBHOOK_EVENT_TYPES).optional(),
+        callback_url: z.string().url().max(2100).optional(),
+        name: z.string().max(255).nullable().optional(),
+        integration: z.enum(WEBHOOK_INTEGRATIONS).nullable().optional(),
+        replace: z.boolean().optional().describe("Full replace (PUT) instead of partial update (PATCH)."),
+        dry_run: z.boolean().optional().describe("Preview only: return the change without applying it."),
+      },
+      annotations: {
+        title: "Update webhook subscription",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ uuid, replace, dry_run, ...params }) => {
+      if (replace && (!params.event_type || !params.callback_url)) {
+        return fail("replace=true (PUT) requires both event_type and callback_url.");
+      }
+      if (!Object.values(params).some((v) => v !== undefined)) {
+        return fail("Nothing to update: pass at least one of event_type, callback_url, name, integration.");
+      }
+      if (dry_run) {
+        return run(async () => ({
+          dry_run: true,
+          method: replace ? "PUT" : "PATCH",
+          current: await client.getWebhook(uuid),
+          changes: params,
+        }));
+      }
+      return run(() => client.updateWebhook(uuid, params, !!replace));
+    },
+  );
+
+  writeTool(
+    "signrequest_delete_webhook",
+    {
+      description:
+        "Permanently DELETE a webhook subscription — SignRequest stops POSTing that event to its callback URL. Irreversible. Use dry_run to see what would be removed.",
+      inputSchema: {
+        uuid: z.string().describe("Webhook subscription UUID."),
+        dry_run: z.boolean().optional().describe("Preview only: return the subscription without deleting it."),
+      },
+      annotations: {
+        title: "Delete webhook subscription",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ uuid, dry_run }) =>
+      dry_run
+        ? run(async () => ({ dry_run: true, would_delete: await client.getWebhook(uuid) }))
+        : run(() => client.deleteWebhook(uuid)),
+  );
+
+  server.registerTool(
+    "signrequest_webhook_health",
+    {
+      description:
+        "Webhook diagnostics in one call: every subscription, the team-level events_callback_url, and recent event deliveries grouped by the receiver's HTTP status code — with failed deliveries listed (event, document, signer, code, timestamp). Note SignRequest's log does not record WHICH callback URL each event went to. Use when callbacks are missing or a receiver returns 4xx/5xx.",
+      inputSchema: {
+        pages: z.number().int().positive().max(10).optional().describe("Pages of the event log to scan (default 3)."),
+      },
+      annotations: { title: "Webhook health", ...READ_ONLY },
+    },
+    async ({ pages }) =>
+      run(async () => {
+        const [subscriptions, teams] = await Promise.all([
+          client.listAllWebhooks(),
+          client.listTeams() as Promise<AnyRec>,
+        ]);
+        const events: AnyRec[] = [];
+        for (let page = 1; page <= (pages ?? 3); page++) {
+          const res = (await client.listEvents({ page })) as AnyRec;
+          events.push(...((res?.results as AnyRec[]) ?? []));
+          if (!res?.next) break;
+        }
+        // A delivery failed if SignRequest marked it undelivered or the receiver answered non-2xx.
+        const failedDelivery = (e: AnyRec) => {
+          const code = Number(e.callback_status_code);
+          return e.delivered === false || (Number.isFinite(code) && (code < 200 || code >= 300));
+        };
+        const byStatus: Record<string, number> = {};
+        for (const e of events) {
+          const k = e.callback_status_code != null ? String(e.callback_status_code) : "none";
+          byStatus[k] = (byStatus[k] ?? 0) + 1;
+        }
+        const failed = events.filter(failedDelivery).map((e) => ({
+          uuid: e.uuid,
+          event_type: e.event_type,
+          callback_status_code: e.callback_status_code ?? null,
+          delivered: e.delivered ?? null,
+          timestamp: e.timestamp,
+          document: e.document?.name ?? null,
+          document_uuid: e.document?.uuid ?? null,
+          signer: e.signer?.email ?? null,
+        }));
+        return {
+          team_callbacks: ((teams?.results as AnyRec[]) ?? []).map((t) => ({
+            team: t.subdomain,
+            events_callback_url: t.events_callback_url ?? null,
+          })),
+          subscriptions,
+          events_scanned: events.length,
+          deliveries_by_http_status: byStatus,
+          failed_deliveries: failed,
+        };
+      }),
+  );
+
+  // ---- Teams (detail + admin) ----
+
+  server.registerTool(
+    "signrequest_get_team",
+    {
+      description: "Get one team by subdomain — settings incl. events_callback_url, members, branding.",
+      inputSchema: { subdomain: z.string().describe("Team subdomain, e.g. 'voltasolar'.") },
+      annotations: { title: "Get team", ...READ_ONLY },
+    },
+    async ({ subdomain }) => run(() => client.getTeam(subdomain)),
+  );
+
+  server.registerTool(
+    "signrequest_get_team_member",
+    {
+      description: "Get one team member by UUID.",
+      inputSchema: { uuid: z.string().describe("Team member UUID.") },
+      annotations: { title: "Get team member", ...READ_ONLY },
+    },
+    async ({ uuid }) => run(() => client.getTeamMember(uuid)),
+  );
+
+  const teamFields = {
+    name: z.string().optional(),
+    phone: z.string().optional(),
+    primary_color: z.string().optional().describe("Hex brand colour, e.g. '#0055aa'."),
+    events_callback_url: z.string().url().optional().describe("Team-level default callback URL for ALL events."),
+    documents_as_attachments: z.boolean().optional(),
+  };
+
+  writeTool(
+    "signrequest_create_team",
+    {
+      description:
+        "Create a new SignRequest team. subdomain is globally unique. Creating teams may require integration-partner access. Use dry_run to preview.",
+      inputSchema: {
+        ...teamFields,
+        name: z.string().describe("Team name."),
+        subdomain: z.string().regex(/^[-a-zA-Z0-9_]+$/).describe("Globally unique subdomain."),
+        dry_run: z.boolean().optional(),
+      },
+      annotations: { title: "Create team", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ dry_run, ...params }) =>
+      dry_run ? ok({ dry_run: true, would_create: params }) : run(() => client.createTeam(params)),
+  );
+
+  writeTool(
+    "signrequest_update_team",
+    {
+      description:
+        "Update team settings (PATCH) — e.g. the team-level events_callback_url, name, branding. Affects every document of the team. Use dry_run to compare current vs new.",
+      inputSchema: {
+        subdomain: z.string().describe("Team subdomain to update."),
+        ...teamFields,
+        dry_run: z.boolean().optional(),
+      },
+      annotations: { title: "Update team", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ subdomain, dry_run, ...params }) => {
+      if (!Object.values(params).some((v) => v !== undefined)) return fail("Nothing to update.");
+      if (dry_run) {
+        return run(async () => ({ dry_run: true, current: await client.getTeam(subdomain), changes: params }));
+      }
+      return run(() => client.updateTeam(subdomain, params));
+    },
+  );
+
+  writeTool(
+    "signrequest_delete_team",
+    {
+      description:
+        "Permanently DELETE a team. Irreversible and high-impact. Requires confirm_subdomain to exactly match subdomain; use dry_run first.",
+      inputSchema: {
+        subdomain: z.string().describe("Team subdomain to delete."),
+        confirm_subdomain: z.string().optional().describe("Must equal subdomain for the delete to run."),
+        dry_run: z.boolean().optional(),
+      },
+      annotations: { title: "Delete team", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ subdomain, confirm_subdomain, dry_run }) => {
+      if (dry_run) return run(async () => ({ dry_run: true, would_delete: await client.getTeam(subdomain) }));
+      if (confirm_subdomain !== subdomain) {
+        return fail(`Refusing to delete: pass confirm_subdomain="${subdomain}" to confirm.`);
+      }
+      return run(() => client.deleteTeam(subdomain));
+    },
+  );
+
+  writeTool(
+    "signrequest_invite_team_member",
+    {
+      description: "Invite someone to a team by email (sends an invitation email). Optionally as admin/owner.",
+      inputSchema: {
+        subdomain: z.string().describe("Team subdomain."),
+        email: z.string().email(),
+        is_admin: z.boolean().optional(),
+        is_owner: z.boolean().optional(),
+        dry_run: z.boolean().optional(),
+      },
+      annotations: { title: "Invite team member", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ subdomain, dry_run, ...params }) =>
+      dry_run
+        ? ok({ dry_run: true, would_invite: { subdomain, ...params } })
+        : run(() => client.inviteTeamMember(subdomain, params)),
+  );
+
+  // ---- Signer forwarding, audit log, API tokens ----
+
+  writeTool(
+    "signrequest_forward_signer",
+    {
+      description:
+        "Forward a signature request from one signer to another person (the new signer gets the signing email). The reason is visible to all parties.",
+      inputSchema: {
+        uuid: z.string().describe("SignRequest UUID (not the document UUID)."),
+        signer_email_to_forward: z.string().email().describe("Current signer's email."),
+        signer_email_to_forward_to: z.string().email().describe("New signer's email."),
+        forwarded_reason: z.string().optional(),
+        dry_run: z.boolean().optional(),
+      },
+      annotations: { title: "Forward signer", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ uuid, dry_run, ...params }) =>
+      dry_run
+        ? ok({ dry_run: true, would_forward: { uuid, ...params } })
+        : run(() => client.forwardSigner(uuid, params)),
+  );
+
+  server.registerTool(
+    "signrequest_list_audit_events",
+    {
+      description:
+        "Team security audit log: logins (successful/failed) and password resets, filterable by user_email, user_ip, event_type, status and date range (YYYY-MM-DD).",
+      inputSchema: {
+        user_email: z.string().optional(),
+        user_ip: z.string().optional(),
+        event_type: z
+          .enum(["login_failed", "login_successful", "password_reset_request_sent", "password_reset_request_error"])
+          .optional(),
+        status: z.enum(["success", "error"]).optional(),
+        date_from: z.string().optional().describe("On/after this date, YYYY-MM-DD."),
+        date_to: z.string().optional().describe("On/before this date, YYYY-MM-DD."),
+        page: z.number().int().positive().optional(),
+        limit: z.number().int().positive().max(100).optional(),
+      },
+      annotations: { title: "List audit events", ...READ_ONLY },
+    },
+    async ({ date_from, date_to, ...q }) =>
+      run(() => client.listAuditEvents({ ...q, timestamp__date__gte: date_from, timestamp__date__lte: date_to })),
+  );
+
+  server.registerTool(
+    "signrequest_list_api_tokens",
+    {
+      description:
+        "List the team's API tokens (name, owner email, team) to audit who has API access. Secret key values are never returned — only the last 4 characters, to tell tokens apart.",
+      inputSchema: { page: z.number().int().positive().optional() },
+      annotations: { title: "List API tokens", ...READ_ONLY },
+    },
+    async ({ page }) =>
+      run(async () => {
+        const res = (await client.listApiTokens({ page })) as AnyRec;
+        return { ...res, results: ((res?.results as AnyRec[]) ?? []).map(redactApiToken) };
+      }),
   );
 
   writeTool(

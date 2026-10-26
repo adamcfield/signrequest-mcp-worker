@@ -20,7 +20,7 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SignRequestClient } from "./signrequest.js";
-import { registerTools } from "./tools.js";
+import { registerTools, VERSION } from "./tools.js";
 
 declare global {
   namespace Cloudflare {
@@ -39,7 +39,7 @@ declare global {
 type Env = Cloudflare.Env;
 
 export class SignRequestMCP extends McpAgent<Env> {
-  server = new McpServer({ name: "signrequest", version: "1.4.0" });
+  server = new McpServer({ name: "signrequest", version: VERSION });
 
   async init(): Promise<void> {
     const client = new SignRequestClient({
@@ -81,7 +81,7 @@ export default {
 
     // Public, unauthenticated health check.
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response("signrequest-mcp worker: ok", {
+      return new Response(`signrequest-mcp worker: ok (v${VERSION})`, {
         status: 200,
         headers: { "content-type": "text/plain" },
       });
