@@ -434,7 +434,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck + tests
 - **Existing-token-only.** SignRequest is owned by Box and is in maintenance mode; this assumes you already have a working team API token.
 - **No Hebrew** in signer email/UI language (see [Signer object](#signer-object)).
 - **Single-user OAuth.** The OAuth worker gates on one shared passphrase — fine for a personal connector, not multi-tenant. Swap the consent handler for a real IdP (GitHub/Google/etc.) if you need per-user identity.
-- **Dependency versions.** `agents@^0.14.5` + `@modelcontextprotocol/sdk@^1.29.0` + `zod@^4` (the SDK accepts zod 3 or 4); `npm audit` is clean. `ai`/`react` are required peers of `agents` but are never imported into the Worker bundle.
+- **Dependency versions.** `agents@^0.30.1` + `@modelcontextprotocol/sdk@1.32.1` (exact — `agents` pins it) + `zod@^4.6.7` + `@cloudflare/workers-oauth-provider@^1.2.4`; `undici` is pinned via `overrides`. `npm audit` is clean. All of `agents`' AI peers are optional and never bundled.
 
 ---
 
@@ -453,5 +453,5 @@ scripts/smoke.mjs smoke test against a deployed worker (npm run smoke)
 .github/workflows/ci.yml  CI — typecheck + tests on push/PR
 wrangler.jsonc        bearer worker config (signrequest-mcp)
 wrangler.oauth.jsonc  OAuth worker config (signrequest-mcp-oauth) — adds OAUTH_KV
-package.json          deps (SDK ^1.29.0, agents ^0.14.5, zod ^4, workers-oauth-provider, wrangler, vitest)
+package.json          deps (SDK 1.32.1, agents ^0.30.1, zod ^4.6.7, workers-oauth-provider ^1.2.4, wrangler, vitest)
 ```
