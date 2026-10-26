@@ -391,7 +391,7 @@ Any HTTP MCP client works — send `Authorization: Bearer <MCP_AUTH_TOKEN>` and 
 | `GET`/`POST` `/authorize` | hand-off to SignRequest login (or the passphrase screen) |
 | `GET /callback` | SignRequest OAuth2 redirect target |
 | `/token`, `/register`, `/.well-known/oauth-*` | OAuth endpoints (handled by the provider) |
-| `POST /mcp`, `GET /sse` | MCP transports, OAuth-protected |
+| `POST /mcp` | MCP Streamable HTTP, OAuth-protected (no SSE on this worker) |
 
 Deploy alongside the bearer worker:
 

@@ -17,7 +17,7 @@
  *   GET/POST /authorize            SignRequest hand-off or passphrase screen (this file)
  *   GET  /callback                 SignRequest OAuth2 redirect target (this file)
  *   /token, /register, /.well-known/oauth-*   handled by OAuthProvider
- *   POST /mcp · GET /sse           MCP transports (OAuth-protected)
+ *   POST /mcp                      MCP Streamable HTTP (OAuth-protected; SSE is bearer-worker only)
  *
  * Secrets (wrangler secret put ... -c wrangler.oauth.jsonc):
  *   SR_CLIENT_ID, SR_CLIENT_SECRET   SignRequest OAuth2 application (login mode)
@@ -89,9 +89,11 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
   }
 
   // Props normally reach the agent only once, at start. Every request re-sends the
-  // current grant's props here, so pick up a refreshed SignRequest token immediately.
-  override async setName(name: string, props?: Props): Promise<void> {
-    await super.setName(name, props);
+  // current grant's props through this hook (agents' getAgentByName), so pick up a
+  // refreshed SignRequest token immediately. Internal API: re-check on agents upgrades
+  // (tests/oauth.test.ts fails if it disappears).
+  override async __unsafe_ensureInitialized(props?: Props): Promise<void> {
+    await super.__unsafe_ensureInitialized(props);
     if (props?.accessToken && props.accessToken !== this.props?.accessToken) {
       await this.updateProps(props);
     }
@@ -276,7 +278,8 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
 
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
     request: reqInfo,
-    userId: `signrequest:${crypto.randomUUID()}`,
+    // No ":" allowed — the provider uses it as a separator inside tokens.
+    userId: `signrequest-${crypto.randomUUID()}`,
     metadata: { label: "SignRequest login" },
     scope: reqInfo.scope ?? [],
     props: propsFromToken(token),
@@ -344,11 +347,20 @@ const defaultHandler = {
   },
 };
 
+/**
+ * Canonical resource — every token's audience. Must stay exactly the URL existing
+ * grants were issued for (claude.ai connects to /mcp), or every session signs out.
+ * Forks: change it to your own worker URL.
+ */
+export const MCP_RESOURCE = "https://signrequest-mcp-oauth.adamcfield.workers.dev/mcp";
+
 export default new OAuthProvider({
+  // Streamable HTTP only: every API route must sit under the resource path, and
+  // claude.ai uses /mcp. Legacy SSE stays on the bearer worker.
   apiHandlers: {
     "/mcp": SignRequestMCP.serve("/mcp"),
-    "/sse": SignRequestMCP.serveSSE("/sse"),
   },
+  resourceMetadata: { resource: MCP_RESOURCE },
   defaultHandler: defaultHandler as never,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",

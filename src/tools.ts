@@ -220,7 +220,7 @@ function validateDocSource(a: {
 }
 
 /** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
-export const VERSION = "1.5.0";
+export const VERSION = "1.5.1";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.

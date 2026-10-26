@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.1 — Dependency security upgrade
+
+### Changed
+- `agents` 0.14 → **0.30.1**, `@modelcontextprotocol/sdk` 1.29 → **1.32.1**, `zod` → **4.6.7**, `@cloudflare/workers-oauth-provider` 0.7 → **1.2.4**, `wrangler` → 4.152, `@cloudflare/workers-types` → 5.x. `undici` pinned to 7.30.1 via `overrides` (wrangler's miniflare ships a vulnerable one). `npm audit`: **0 vulnerabilities** (was 29).
+- OAuth worker: canonical resource set to `…/mcp` (what existing grants carry, so sessions survive); legacy SSE dropped from the OAuth worker (1.x requires every API route under the resource) — the bearer worker still serves `/sse`.
+- CI on Node 24 (Node 20 is end-of-life, and npm 10 can't resolve `agents` 0.30's peer set).
+
+### Fixed
+- SignRequest-login grants used a `:` in the user ID, which the OAuth provider can't parse in tokens — would have broken every login-mode session (login mode wasn't enabled yet).
+
 ## 1.5.0 — Webhooks, full API coverage, SignRequest login
 
 ### Added
