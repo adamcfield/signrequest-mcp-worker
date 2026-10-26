@@ -73,9 +73,25 @@ function escapeHtml(s: string): string {
   );
 }
 
+// btoa/atob only handle Latin-1; query params like `state` can be arbitrary
+// Unicode, so round-trip through UTF-8 bytes.
+function encodeAuthRequest(obj: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function decodeAuthRequest<T>(s: string): T {
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder().decode(bytes)) as T;
+}
+
 /** Render the single-user passphrase consent screen. */
 function consentPage(reqInfo: AuthRequest, clientName: string, error: string | null): Response {
-  const req = btoa(JSON.stringify(reqInfo));
+  const req = encodeAuthRequest(reqInfo);
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -141,7 +157,7 @@ async function handleAuthorize(request: Request, env: Env): Promise<Response> {
     try {
       const form = await request.formData();
       passphrase = String(form.get("passphrase") ?? "");
-      reqInfo = JSON.parse(atob(String(form.get("req") ?? ""))) as AuthRequest;
+      reqInfo = decodeAuthRequest<AuthRequest>(String(form.get("req") ?? ""));
     } catch {
       return new Response("Invalid OAuth request", { status: 400 });
     }
