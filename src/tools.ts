@@ -223,7 +223,7 @@ function validateDocSource(a: {
 }
 
 /** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
-export const VERSION = "1.6.0";
+export const VERSION = "1.7.0";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
@@ -249,9 +249,6 @@ export const RENAMES: Readonly<Record<string, string>> = {
 };
 
 /** get_webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
-const MAX_CALLBACK_LOOKUPS = 20;
-
-/** webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
 const MAX_CALLBACK_LOOKUPS = 20;
 
 export interface RegisterToolsOptions {
