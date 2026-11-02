@@ -5,12 +5,10 @@
 // the create commands). KV ids are identifiers, not secrets. Crons stay OFF on the copy while
 // both deployments run, so scheduled side effects don't happen twice.
 {
+  // Volta Cloudflare account ("Adam@volta.solar's Account"). Overrides the personal account_id
+  // pinned in the base configs.
+  "account_id": "bc6ba47b42d6c9cd4fed775da4baac90",
   "configs": {
-    "wrangler.jsonc": { "domain": "signrequest.mcp.volta.solar" },
-    "wrangler.oauth.jsonc": {
-      "domain": "signrequest-oauth.mcp.volta.solar",
-      "kv": { "OAUTH_KV": "" },
-      "vars": { "MCP_RESOURCE": "https://signrequest-oauth.mcp.volta.solar/mcp" }
-    }
+    "wrangler.jsonc": { "domain": "govmap.mcp.volta.solar", "kv": { "GOVMAP_KV": "" }, "crons": [] }
   }
 }
