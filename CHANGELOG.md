@@ -3,7 +3,7 @@
 ## 1.6.1 — 2026-11-02 — Volta account copy
 
 ### Added
-- `deploy/volta.jsonc` + `scripts/deploy-volta.mjs` + `Deploy (Volta copy)` workflow: deploys a parallel copy of both workers to the Volta Cloudflare account (custom domains `signrequest(-oauth).mcp.volta.solar`, its own `OAUTH_KV`). The workflow skips until the `VOLTA_CLOUDFLARE_*` repo secrets are set and the overlay's KV id is filled in. The personal deployment is unchanged.
+- `deploy/volta.jsonc` + `scripts/deploy-volta.mjs` + `Deploy (Volta copy)` workflow: deploys a parallel copy of both workers to the Volta Cloudflare account (its workers.dev subdomain, its own `OAUTH_KV`). The workflow skips until the `VOLTA_CLOUDFLARE_*` repo secrets are set and the overlay's KV id is filled in. The personal deployment is unchanged.
 - OAuth worker: optional `MCP_RESOURCE` var overrides the token audience, so the copy can serve its own `/mcp` URL. Unset, the resource is the existing canonical URL and current grants are untouched.
 
 ## 1.6.0 — 2026-11-02 — Webhook failure attribution, compact documents, passphrase code removed
