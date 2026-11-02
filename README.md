@@ -63,6 +63,7 @@ Bearer worker (`signrequest-mcp`):
 | Method | Path           | Auth   | Purpose                                  |
 |--------|----------------|--------|------------------------------------------|
 | `GET`  | `/`            | none   | Health check → `signrequest-mcp worker: ok` |
+| `GET`  | `/health`      | none   | JSON `{ok, service, version, warnings}` — `warnings` names any missing secret |
 | `POST` | `/mcp`         | Bearer | MCP Streamable HTTP (modern clients)     |
 | `GET`  | `/sse`         | Bearer | MCP SSE (legacy clients)                 |
 
@@ -81,6 +82,8 @@ OAuth worker (`signrequest-mcp-oauth`) — see [OAuth worker](#oauth-worker-clau
 ## Tools
 
 All tools call an external service (`openWorldHint: true`). "Sends email" means SignRequest dispatches real signing emails.
+
+**Name contract:** every tool is `signrequest_<verb>_<noun>`, and `readOnlyHint` is `true` exactly when the verb is a read verb (`get`, `list`, `search`, `whoami`, …). A test enforces it, so a read-only client can filter on name and annotation together. Renamed tools keep their old name callable but unlisted until 2.0: `signrequest_webhook_health` → `signrequest_get_webhook_health`, `signrequest_campaign_status` → `signrequest_get_campaign_status`, `signrequest_wait_until_signed` → `signrequest_get_final_status`.
 
 ### Create & send
 
@@ -155,9 +158,9 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 | `signrequest_create_webhook` | Subscribe a callback URL to one event type | `event_type`, `callback_url`, `name?`, `integration?`, `dry_run?` | write |
 | `signrequest_update_webhook` | PATCH a subscription; `replace=true` → PUT | `uuid` + fields, `replace?`, `dry_run?` | write · destructive |
 | `signrequest_delete_webhook` | Delete a subscription | `uuid`, `dry_run?` | write · destructive |
-| `signrequest_webhook_health` | Subscriptions + team callback URL + recent deliveries by HTTP status, failures listed and grouped by the receiving callback URL | `pages?` | read-only |
+| `signrequest_get_webhook_health` | Subscriptions + team callback URL + recent deliveries by HTTP status, failures listed and grouped by the receiving callback URL | `pages?` | read-only |
 
-> SignRequest's event log doesn't record *which* URL a delivery went to. `webhook_health` looks up each failing document (up to 20) and groups failures under the document's own `events_callback_url`, or the team's when the document has none — a per-document URL pointing at a dead receiver shows up as one row.
+> SignRequest's event log doesn't record *which* URL a delivery went to. `get_webhook_health` looks up each failing document (up to 20) and groups failures under the document's own `events_callback_url`, or the team's when the document has none — a per-document URL pointing at a dead receiver shows up as one row.
 
 ### Attachments
 
@@ -191,11 +194,11 @@ Built on top of the API with bounded concurrency, auto-pagination, and polling �
 
 | Tool | Purpose | Input | Class |
 |------|---------|-------|-------|
-| `signrequest_campaign_status` | **Roster rollup** — runs the signer summary for many people (bounded concurrency) and returns aggregate counts + per-person status/fields. One call drives a tracking dashboard. | `emails[]`, `name_contains?`, `concurrency?` | read-only |
+| `signrequest_get_campaign_status` | **Roster rollup** — runs the signer summary for many people (bounded concurrency) and returns aggregate counts + per-person status/fields. One call drives a tracking dashboard. | `emails[]`, `name_contains?`, `concurrency?` | read-only |
 | `signrequest_bulk_send` | **Bulk campaign** — sends the same template/file to many recipients (one request each); per-recipient results, `dry_run`, and an `embedded` switch (no emails, returns embed_urls) | `template`/`file_from_url`, `recipients[]`, … | write |
 | `signrequest_list_all_documents` | Auto-paginated, compact list of all documents (no manual paging) | `cap?`, `external_id?` | read-only |
 | `signrequest_list_template_fields` | Discover a template's fillable `external_id`s / prefill tags | `uuid` | read-only |
-| `signrequest_wait_until_signed` | Bounded poll until signed/declined/cancelled (≤25s); for long waits use webhooks/events | `uuid`, `timeout_seconds?`, `interval_seconds?` | read-only |
+| `signrequest_get_final_status` | Bounded poll until signed/declined/cancelled (≤25s); for long waits use webhooks/events | `uuid`, `timeout_seconds?`, `interval_seconds?` | read-only |
 
 ### Operational modes
 
@@ -384,6 +387,7 @@ Any HTTP MCP client works — send `Authorization: Bearer <MCP_AUTH_TOKEN>` and 
 | Route | Purpose |
 |-------|---------|
 | `GET /` | health check (no auth) |
+| `GET /health` | JSON `{ok, service, version, warnings}` (no auth) |
 | `GET /authorize` | hand-off to SignRequest login |
 | `GET /callback` | SignRequest OAuth2 redirect target |
 | `/token`, `/register`, `/.well-known/oauth-*` | OAuth endpoints (handled by the provider) |
@@ -417,7 +421,7 @@ npm test            # vitest — client (retry/backoff/pagination, no-retry-on-P
 npm run smoke       # live smoke vs a deployed worker (set MCP_URL + MCP_TOKEN)
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck + tests on every push and PR. The client is fully unit-testable with a mocked `fetch` (injectable `backoffBaseMs` keeps retry tests fast); the pure helpers and the signer-summary composition are tested against fixtures.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck, tests and a `wrangler deploy --dry-run` of both workers on every push and PR (Node 22). The client is fully unit-testable with a mocked `fetch` (injectable `backoffBaseMs` keeps retry tests fast); the pure helpers and the signer-summary composition are tested against fixtures.
 
 ## Caveats
 
