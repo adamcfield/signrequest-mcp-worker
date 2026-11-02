@@ -1,7 +1,7 @@
 /**
  * SignRequest MCP server — Cloudflare Worker (remote, Streamable-HTTP + SSE).
  *
- * Reuses the exact same tool definitions as the stdio server (./tools).
+ * Shares its tool definitions (./tools) with the OAuth worker (./oauth).
  * The SignRequest token lives as a Worker secret; access is gated by a bearer
  * token (MCP_AUTH_TOKEN) so a leaked URL isn't an open relay to your account.
  *

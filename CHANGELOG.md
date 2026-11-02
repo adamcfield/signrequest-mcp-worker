@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0 — 2026-11-02 — Webhook failure attribution, compact documents, passphrase code removed
+
+### Added
+- `webhook_health` now returns `failures_by_callback_url`: it looks up each failing document (up to 20, 5 at a time) and groups failures under the document's own `events_callback_url`, falling back to the team URL. SignRequest's event log never says which URL an event went to, so a per-document callback pointing at a dead receiver used to be indistinguishable from a team-wide outage.
+
+### Changed
+- `get_document` returns the compact summary by default; pass `compact=false` for the full object. The full object carries every prefill tag and signer input (ID numbers, phones, addresses), which a model rarely needs.
+- `compactDoc` adds `events_callback_url`.
+- Signer `language` docs: `he` is accepted by the API. The tool description told the model Hebrew was unsupported, which production documents contradict.
+- OAuth worker: the passphrase / shared `SIGNREQUEST_TOKEN` sign-in code is gone (it was retired operationally in 1.5.2). Without `SR_CLIENT_ID`/`SR_CLIENT_SECRET`, `/authorize` fails closed with a 503. A pre-1.5.2 passphrase grant gets a clear "reconnect" error instead of a SignRequest 401.
+- README, SECURITY.md and code comments updated to match (no passphrase, no stdio server). Added `CLAUDE.md`.
+
+### Fixed
+- `compactDoc().signing_log_url` returned the whole `signing_log` object (`{pdf, security_hash}`) instead of its PDF URL.
+
 ## 1.5.2 — Team context for SignRequest login
 
 ### Changed

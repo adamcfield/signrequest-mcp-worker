@@ -195,3 +195,62 @@ describe("webhook_health visibility", () => {
     expect(calls.some((c) => c.url.endsWith("/events/?page=1&limit=100"))).toBe(true);
   });
 });
+
+describe("webhook_health callback attribution", () => {
+  it("groups failures by each document's own callback URL, falling back to the team's", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const path = url.replace(BASE, "");
+        const body = path.startsWith("/webhooks/")
+          ? { results: [], next: null }
+          : path.startsWith("/teams/")
+            ? { results: [{ subdomain: "volta", events_callback_url: "https://team.test/cb" }] }
+            : path === "/documents/d1/"
+              ? { uuid: "d1", events_callback_url: "https://old.test/cb" }
+              : path === "/documents/d2/"
+                ? { uuid: "d2", events_callback_url: null }
+                : {
+                    next: null,
+                    results: [
+                      { uuid: "e1", event_type: "sent", delivered: false, callback_status_code: 404, document: { uuid: "d1" } },
+                      { uuid: "e2", event_type: "signed", delivered: false, callback_status_code: 404, document: { uuid: "d1" } },
+                      { uuid: "e3", event_type: "sent", delivered: false, callback_status_code: 500, document: { uuid: "d2" } },
+                      { uuid: "e4", event_type: "sent", delivered: true, callback_status_code: 200, document: { uuid: "d3" } },
+                    ],
+                  };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const { server, tools } = fakeServer();
+    registerTools(server, new SignRequestClient({ token: "t" }));
+    const out = JSON.parse((await tools.get("signrequest_webhook_health")!.handler({})).content[0].text);
+    expect(out.failures_by_callback_url).toEqual([
+      { callback_url: "https://old.test/cb", source: "document", failures: 2, by_http_status: { "404": 2 } },
+      { callback_url: "https://team.test/cb", source: "team", failures: 1, by_http_status: { "500": 1 } },
+    ]);
+  });
+});
+
+describe("get_document", () => {
+  const doc = { uuid: "d1", name: "N", status: "se", prefill_tags: [{ external_id: "IssuedID", text: "123" }] };
+
+  it("returns the compact summary by default", async () => {
+    capture(doc);
+    const { server, tools } = fakeServer();
+    registerTools(server, new SignRequestClient({ token: "t" }));
+    const out = JSON.parse((await tools.get("signrequest_get_document")!.handler({ uuid: "d1" })).content[0].text);
+    expect(out.status).toBe("sent");
+    expect(out.prefill_tags).toBeUndefined();
+  });
+
+  it("returns the raw document with compact=false", async () => {
+    capture(doc);
+    const { server, tools } = fakeServer();
+    registerTools(server, new SignRequestClient({ token: "t" }));
+    const out = JSON.parse(
+      (await tools.get("signrequest_get_document")!.handler({ uuid: "d1", compact: false })).content[0].text,
+    );
+    expect(out.prefill_tags).toHaveLength(1);
+  });
+});

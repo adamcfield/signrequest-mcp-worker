@@ -10,7 +10,8 @@ or contact the maintainer directly.
 
 - **Auth-gated, fail-closed.** The bearer worker requires `Authorization: Bearer <MCP_AUTH_TOKEN>`
   (constant-time compare; if no token is configured, everything returns 401). The OAuth worker
-  gates on OAuth 2.1 + a passphrase. The SignRequest API token never leaves the Worker.
+  gates on OAuth 2.1 with SignRequest's own login — each user acts with their own SignRequest
+  token, and without the OAuth app secrets sign-in fails closed. API tokens never leave the Worker.
 - **Per-session isolation.** Each MCP session runs in its own Durable Object instance — server
   and transport objects are not shared across clients.
 - **Safe by default.** Writes are never auto-retried (no double-send); batch tools use bounded

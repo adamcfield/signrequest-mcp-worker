@@ -1,8 +1,8 @@
 /**
  * Shared SignRequest tool registration.
  *
- * Used by BOTH the stdio server (src/index.ts) and the Cloudflare Worker, so the
- * tool surface, schemas, and safety annotations stay identical across transports.
+ * Used by BOTH Workers (bearer: src/index.ts, OAuth: src/oauth.ts), so the tool
+ * surface, schemas, and safety annotations stay identical across them.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -99,8 +99,10 @@ export function compactDoc(doc: AnyRec): AnyRec {
     status: readableStatus(doc.status),
     status_code: doc.status ?? null,
     signed_pdf_url: doc.pdf ?? null,
-    signing_log_url: doc.signing_log ?? null,
+    // signing_log is an object ({ pdf, security_hash }), not a URL.
+    signing_log_url: (doc.signing_log as AnyRec | undefined)?.pdf ?? null,
     external_id: doc.external_id ?? null,
+    events_callback_url: doc.events_callback_url ?? null,
     signers: signers.map((s) => ({
       email: s.email,
       signed: !!s.signed,
@@ -175,7 +177,7 @@ const signerSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Email/UI language. Supported: en, en-gb, nl, fr, de, da, fi, hu, it, no, pl, pt, es, sv. Hebrew is NOT supported.",
+      "Email/UI language: en, en-gb, nl, fr, de, da, fi, hu, it, no, pl, pt, es, sv — and he (Hebrew), which the API accepts although it is missing from SignRequest's published list.",
     ),
   force_language: z.boolean().optional(),
   message: z.string().optional().describe("Per-signer message."),
@@ -220,11 +222,14 @@ function validateDocSource(a: {
 }
 
 /** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
-export const VERSION = "1.5.2";
+export const VERSION = "1.6.0";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
+
+/** webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
+const MAX_CALLBACK_LOOKUPS = 20;
 
 export interface RegisterToolsOptions {
   /** Default sender email if a tool call omits from_email. */
@@ -506,17 +511,20 @@ export function registerTools(
     "signrequest_get_document",
     {
       description:
-        "Get a document by UUID — conversion status, the signed PDF URL (once signed), security hash and signing log. Pass compact=true for a trimmed summary (status, signers, signed-PDF URL) that uses far less context.",
+        "Get a document by UUID. Returns a trimmed summary by default (status, signers, signed-PDF and signing-log URLs, external_id, events_callback_url). Pass compact=false for the full object (prefill tags, every signer input, security hashes) — it is large and full of signer personal data, so only ask for it when you need those fields.",
       inputSchema: {
         uuid: z.string(),
-        compact: z.boolean().optional().describe("Return a trimmed summary instead of the full document."),
+        compact: z
+          .boolean()
+          .optional()
+          .describe("Default true: trimmed summary. false = the full raw document."),
       },
       annotations: { title: "Get document", ...READ_ONLY },
     },
     async ({ uuid, compact }) =>
       run(async () => {
         const doc = (await client.getDocument(uuid)) as AnyRec;
-        return compact ? compactDoc(doc) : doc;
+        return compact === false ? doc : compactDoc(doc);
       }),
   );
 
@@ -720,7 +728,7 @@ export function registerTools(
     "signrequest_webhook_health",
     {
       description:
-        "Webhook diagnostics in one call: every subscription, the team-level events_callback_url, and recent event deliveries grouped by the receiver's HTTP status code — with failed deliveries listed (event, document, signer, code, timestamp). Note SignRequest's log does not record WHICH callback URL each event went to. Use when callbacks are missing or a receiver returns 4xx/5xx.",
+        "Webhook diagnostics in one call: every subscription, the team-level events_callback_url, and recent event deliveries grouped by the receiver's HTTP status code — with failed deliveries listed (event, document, signer, code, timestamp). SignRequest's log doesn't record which URL an event went to, so failures are also grouped by the failing documents' own events_callback_url (falling back to the team URL), which usually pinpoints a dead receiver. Use when callbacks are missing or a receiver returns 4xx/5xx.",
       inputSchema: {
         pages: z
           .number()
@@ -764,7 +772,41 @@ export function registerTools(
           document_uuid: e.document?.uuid ?? null,
           signer: e.signer?.email ?? null,
         }));
+        // Attribute failures to a receiver: a document's own events_callback_url overrides the
+        // team's. Look up each distinct failing document once (bounded) and group by that URL.
+        const teamUrl: string | null = ((teams?.results as AnyRec[]) ?? [])[0]?.events_callback_url ?? null;
+        const failedDocs = [...new Set(failed.map((f) => f.document_uuid).filter((u): u is string => !!u))];
+        const lookedUp = failedDocs.slice(0, MAX_CALLBACK_LOOKUPS);
+        const docUrl = new Map<string, string | null>();
+        await mapLimit(lookedUp, 5, async (u) => {
+          try {
+            const d = (await client.getDocument(u)) as AnyRec;
+            docUrl.set(u, d?.events_callback_url ?? null);
+          } catch {
+            /* unknown — left out of the map */
+          }
+        });
+        const byUrl = new Map<string, { failures: number; codes: Record<string, number>; source: string }>();
+        for (const f of failed) {
+          if (!f.document_uuid || !docUrl.has(f.document_uuid)) continue;
+          const own = docUrl.get(f.document_uuid);
+          const key = own ?? teamUrl ?? "(no callback URL)";
+          const row = byUrl.get(key) ?? { failures: 0, codes: {}, source: own ? "document" : "team" };
+          row.failures++;
+          const code = f.callback_status_code != null ? String(f.callback_status_code) : "none";
+          row.codes[code] = (row.codes[code] ?? 0) + 1;
+          byUrl.set(key, row);
+        }
+        const failures_by_callback_url = [...byUrl.entries()]
+          .map(([callback_url, r]) => ({ callback_url, source: r.source, failures: r.failures, by_http_status: r.codes }))
+          .sort((a, b) => b.failures - a.failures);
+
         const warnings: string[] = [];
+        if (failedDocs.length > lookedUp.length) {
+          warnings.push(
+            `failures_by_callback_url covers ${lookedUp.length} of ${failedDocs.length} failing documents (lookup cap).`,
+          );
+        }
         if (events.length === 0) {
           warnings.push(
             "No events visible: this token can't read the team's event log (SignRequest scopes /events/ to the team). Deliveries may still be failing — check the team context (SIGNREQUEST_TEAM) or use a team API token.",
@@ -780,6 +822,7 @@ export function registerTools(
           subscriptions,
           events_scanned: events.length,
           deliveries_by_http_status: byStatus,
+          ...(failures_by_callback_url.length ? { failures_by_callback_url } : {}),
           failed_deliveries: failed,
         };
       }),

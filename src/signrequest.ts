@@ -54,7 +54,7 @@ export interface Signer {
   last_name?: string;
   /** Signing order; lower signs first. The sender (owner) is always index 0. */
   order?: number;
-  /** Email/UI language. Supported: en, en-gb, nl, fr, de, da, fi, hu, it, no, pl, pt, es, sv. (No Hebrew.) */
+  /** Email/UI language: en, en-gb, nl, fr, de, da, fi, hu, it, no, pl, pt, es, sv, plus he (accepted by the API, missing from its published list). */
   language?: string;
   force_language?: boolean;
   /** Per-signer message. */

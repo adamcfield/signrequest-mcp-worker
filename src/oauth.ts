@@ -5,23 +5,20 @@
  * OAuth 2.1 provider (@cloudflare/workers-oauth-provider) so it can be added to
  * Claude.ai as a custom connector (Claude.ai web requires OAuth, not a bearer).
  *
- * Two sign-in modes, picked by which secrets are set:
- *   - SignRequest login (SR_CLIENT_ID + SR_CLIENT_SECRET): /authorize hands off to
- *     SignRequest's own OAuth2 login; each user acts with their own SignRequest
- *     access token, refreshed upstream whenever Claude refreshes ours.
- *   - Passphrase (fallback): a single shared APP_PASSPHRASE on the consent screen,
- *     acting with the team-scoped SIGNREQUEST_TOKEN.
+ * Sign-in is SignRequest's own OAuth2 login (SR_CLIENT_ID + SR_CLIENT_SECRET):
+ * /authorize hands off to SignRequest, and each user acts with their own
+ * SignRequest access token, refreshed upstream whenever Claude refreshes ours.
+ * Without those secrets the worker fails closed (503 on /authorize).
  *
  * Routes:
  *   GET  /                         health check (no auth)
- *   GET/POST /authorize            SignRequest hand-off or passphrase screen (this file)
+ *   GET  /authorize                hand-off to SignRequest's login (this file)
  *   GET  /callback                 SignRequest OAuth2 redirect target (this file)
  *   /token, /register, /.well-known/oauth-*   handled by OAuthProvider
  *   POST /mcp                      MCP Streamable HTTP (OAuth-protected; SSE is bearer-worker only)
  *
  * Secrets (wrangler secret put ... -c wrangler.oauth.jsonc):
- *   SR_CLIENT_ID, SR_CLIENT_SECRET   SignRequest OAuth2 application (login mode)
- *   SIGNREQUEST_TOKEN, APP_PASSPHRASE   passphrase mode
+ *   SR_CLIENT_ID, SR_CLIENT_SECRET   SignRequest OAuth2 application
  * Optional: SIGNREQUEST_TEAM (team subdomain for team context), SIGNREQUEST_FROM_EMAIL,
  *   SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
  */
@@ -34,20 +31,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SignRequestClient } from "./signrequest.js";
 import { registerTools, VERSION } from "./tools.js";
 
-// Reuses the bearer worker's global Cloudflare.Env (MCP_OBJECT, SIGNREQUEST_TOKEN,
-// SIGNREQUEST_FROM_EMAIL, etc.) and adds the OAuth-specific bindings.
+// Reuses the bearer worker's global Cloudflare.Env (MCP_OBJECT, SIGNREQUEST_FROM_EMAIL,
+// etc.) and adds the OAuth-specific bindings. SIGNREQUEST_TOKEN is not used here.
 interface Env extends Cloudflare.Env {
   OAUTH_KV: KVNamespace;
   /** Injected by OAuthProvider. */
   OAUTH_PROVIDER: OAuthHelpers;
-  APP_PASSPHRASE: string;
   SR_CLIENT_ID?: string;
   SR_CLIENT_SECRET?: string;
   /** Team subdomain: API calls go to https://<team>.signrequest.com/api/v1 for team context. */
   SIGNREQUEST_TEAM?: string;
 }
 
-/** Passphrase grants carry only `user`; SignRequest-login grants carry the upstream tokens. */
+/** Grant props: the user's upstream SignRequest tokens. */
 type Props = {
   user: string;
   accessToken?: string;
@@ -72,11 +68,15 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
   server = new McpServer({ name: "signrequest", version: VERSION });
 
   async init(): Promise<void> {
-    const oauth = !!this.props?.accessToken;
     const client = new SignRequestClient({
-      // Read per request so a token refreshed mid-session (see setName) is used.
-      token: () => this.props?.accessToken ?? this.env.SIGNREQUEST_TOKEN,
-      authScheme: oauth ? "Bearer" : "Token",
+      // Read per request so a token refreshed mid-session (see __unsafe_ensureInitialized)
+      // is used. Grants without an upstream token (pre-1.5.2 passphrase grants) can't act.
+      token: () => {
+        const t = this.props?.accessToken;
+        if (!t) throw new Error("This connection has no SignRequest login. Disconnect and reconnect the connector.");
+        return t;
+      },
+      authScheme: "Bearer",
       baseUrl: apiBaseUrl(this.env),
       maxRetries: this.env.SIGNREQUEST_MAX_RETRIES
         ? Number(this.env.SIGNREQUEST_MAX_RETRIES)
@@ -100,85 +100,11 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
   }
 }
 
-/** Length-safe constant-time string comparison. */
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return mismatch === 0;
-}
-
 function escapeHtml(s: string): string {
   return s.replace(
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
   );
-}
-
-// btoa/atob only handle Latin-1; query params like `state` can be arbitrary
-// Unicode, so round-trip through UTF-8 bytes.
-function encodeAuthRequest(obj: unknown): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(obj));
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
-
-function decodeAuthRequest<T>(s: string): T {
-  const bin = atob(s);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return JSON.parse(new TextDecoder().decode(bytes)) as T;
-}
-
-/** Render the single-user passphrase consent screen. */
-function consentPage(reqInfo: AuthRequest, clientName: string, error: string | null): Response {
-  const req = encodeAuthRequest(reqInfo);
-  const html = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Authorize SignRequest MCP</title>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body { font: 16px/1.5 system-ui, -apple-system, sans-serif; margin: 0; display: grid; place-items: center; min-height: 100vh; background: #0b0c0f; color: #e7e9ee; }
-  .card { width: min(92vw, 380px); background: #15171c; border: 1px solid #272a31; border-radius: 14px; padding: 28px; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
-  h1 { font-size: 18px; margin: 0 0 6px; }
-  p { color: #9aa0aa; font-size: 14px; margin: 0 0 18px; }
-  .client { color: #e7e9ee; font-weight: 600; }
-  label { display: block; font-size: 13px; margin: 0 0 6px; color: #c2c7d0; }
-  input[type=password] { width: 100%; padding: 11px 12px; border-radius: 9px; border: 1px solid #303440; background: #0e1014; color: #fff; font-size: 15px; }
-  button { width: 100%; margin-top: 16px; padding: 11px; border: 0; border-radius: 9px; background: #4c6ef5; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
-  button:hover { background: #3b5bdb; }
-  .err { color: #ff8787; font-size: 13px; margin: 12px 0 0; }
-  .foot { color: #6b7280; font-size: 12px; margin-top: 18px; text-align: center; }
-</style></head>
-<body>
-  <form class="card" method="POST" action="/authorize">
-    <h1>Authorize access</h1>
-    <p><span class="client">${escapeHtml(clientName || "An application")}</span> wants to connect to your SignRequest MCP server.</p>
-    <label for="p">Passphrase</label>
-    <input id="p" name="passphrase" type="password" autocomplete="current-password" autofocus required>
-    <input type="hidden" name="req" value="${req}">
-    <button type="submit">Authorize</button>
-    ${error ? `<p class="err">${escapeHtml(error)}</p>` : ""}
-    <p class="foot">Single-user connector · enter your passphrase to continue</p>
-  </form>
-</body></html>`;
-  return new Response(html, {
-    status: error ? 401 : 200,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
-}
-
-/** Best-effort human-readable client name for the consent screen. */
-async function clientName(env: Env, clientId: string): Promise<string> {
-  try {
-    const client = await env.OAUTH_PROVIDER.lookupClient(clientId);
-    return (client as { clientName?: string } | null)?.clientName ?? "";
-  } catch {
-    return "";
-  }
 }
 
 function errorPage(message: string, status = 400): Response {
@@ -288,56 +214,27 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleAuthorize(request: Request, env: Env): Promise<Response> {
-  if (request.method === "GET") {
-    let reqInfo: AuthRequest;
-    try {
-      reqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
-    } catch {
-      return new Response("Invalid OAuth request", { status: 400 });
-    }
-    if (!reqInfo.clientId) return new Response("Invalid OAuth request", { status: 400 });
-    if (loginMode(env)) return redirectToSignRequest(request, env, reqInfo);
-    return consentPage(reqInfo, await clientName(env, reqInfo.clientId), null);
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  // Fail closed: without a SignRequest OAuth2 app there is no way to sign in.
+  if (!loginMode(env)) return errorPage("This connector isn't configured for SignRequest login yet.", 503);
+  let reqInfo: AuthRequest;
+  try {
+    reqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+  } catch {
+    return new Response("Invalid OAuth request", { status: 400 });
   }
-
-  if (request.method === "POST" && !loginMode(env)) {
-    let reqInfo: AuthRequest;
-    let passphrase: string;
-    try {
-      const form = await request.formData();
-      passphrase = String(form.get("passphrase") ?? "");
-      reqInfo = decodeAuthRequest<AuthRequest>(String(form.get("req") ?? ""));
-    } catch {
-      return new Response("Invalid OAuth request", { status: 400 });
-    }
-    if (!reqInfo.clientId) return new Response("Invalid OAuth request", { status: 400 });
-
-    // Fail closed: no passphrase configured -> reject everything.
-    if (!env.APP_PASSPHRASE || !safeEqual(passphrase, env.APP_PASSPHRASE)) {
-      return consentPage(reqInfo, await clientName(env, reqInfo.clientId), "Incorrect passphrase. Try again.");
-    }
-
-    const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
-      request: reqInfo,
-      userId: "owner",
-      metadata: {},
-      scope: reqInfo.scope ?? [],
-      props: { user: "owner" } satisfies Props,
-    });
-    return Response.redirect(redirectTo, 302);
-  }
-
-  return new Response("Method not allowed", { status: 405 });
+  if (!reqInfo.clientId) return new Response("Invalid OAuth request", { status: 400 });
+  return redirectToSignRequest(request, env, reqInfo);
 }
 
-/** Non-API, non-token routes: the consent screen and a public health check. */
+/** Non-API, non-token routes: the SignRequest hand-off, its callback and a public health check. */
 const defaultHandler = {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname === "/callback" && request.method === "GET") return handleCallback(request, env);
     if (url.pathname === "/" && request.method === "GET") {
-      const mode = loginMode(env) ? "SignRequest login" : "passphrase";
+      const mode = loginMode(env) ? "SignRequest login" : "not configured";
       return new Response(`signrequest-mcp-oauth worker: ok (v${VERSION}, sign-in: ${mode}, OAuth-gated MCP at /mcp)`, {
         status: 200,
         headers: { "content-type": "text/plain" },
@@ -366,7 +263,7 @@ export default new OAuthProvider({
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
   // Login mode: match our token lifetime to SignRequest's, and refresh SignRequest's
-  // token each time Claude refreshes ours. Passphrase grants have no upstream token.
+  // token each time Claude refreshes ours.
   tokenExchangeCallback: async ({ grantType, props }) => {
     const p = props as Props;
     if (!p?.refreshToken) return;
