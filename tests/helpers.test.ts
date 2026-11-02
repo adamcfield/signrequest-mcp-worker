@@ -67,12 +67,15 @@ describe("pickSigner", () => {
 describe("compactDoc", () => {
   it("trims to the fields that matter and drops the rest", () => {
     const doc = {
-      uuid: "u1", name: "Doc", status: "si", pdf: "http://pdf", signing_log: "http://log",
-      external_id: "e1", extra: "dropped",
+      uuid: "u1", name: "Doc", status: "si", pdf: "http://pdf", signing_log: { pdf: "http://log", security_hash: "h" },
+      external_id: "e1", events_callback_url: "https://cb.test", extra: "dropped",
       signrequest: { signers: [{ email: "a@x.com", signed: true, declined: false, viewed: true, embed_url: "http://e" }] },
     };
     const c = compactDoc(doc);
     expect(c).toMatchObject({ uuid: "u1", name: "Doc", status: "signed", status_code: "si", signed_pdf_url: "http://pdf" });
+    // signing_log is an object in the API; the summary exposes its PDF URL, not the object.
+    expect(c.signing_log_url).toBe("http://log");
+    expect(c.events_callback_url).toBe("https://cb.test");
     expect(c.signers[0]).toEqual({ email: "a@x.com", signed: true, declined: false, viewed: true, embed_url: "http://e" });
     expect((c as Record<string, unknown>).extra).toBeUndefined();
   });

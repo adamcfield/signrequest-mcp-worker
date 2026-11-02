@@ -17,4 +17,9 @@ describe("oauth worker library contracts", () => {
     expect(src).toContain('MCP_RESOURCE = "https://signrequest-mcp-oauth.adamcfield.workers.dev/mcp"');
     expect(src).not.toMatch(/userId: `signrequest:/);
   });
+
+  it("has no passphrase or shared-token sign-in path (retired in 1.5.2)", () => {
+    const src = readFileSync(new URL("../src/oauth.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/APP_PASSPHRASE|env\.SIGNREQUEST_TOKEN|consentPage/);
+  });
 });

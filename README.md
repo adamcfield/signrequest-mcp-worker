@@ -9,7 +9,7 @@ This repo ships **two deployments from the same code**:
 | Worker | Auth | Use it from | Entry |
 |--------|------|-------------|-------|
 | **`signrequest-mcp`** | static bearer token | Claude Code, Claude Desktop, programmatic | [`src/index.ts`](src/index.ts) · [`wrangler.jsonc`](wrangler.jsonc) |
-| **`signrequest-mcp-oauth`** | OAuth 2.1 (single-user passphrase) | **Claude.ai web** custom connector | [`src/oauth.ts`](src/oauth.ts) · [`wrangler.oauth.jsonc`](wrangler.oauth.jsonc) |
+| **`signrequest-mcp-oauth`** | OAuth 2.1 (SignRequest login) | **Claude.ai web** custom connector | [`src/oauth.ts`](src/oauth.ts) · [`wrangler.oauth.jsonc`](wrangler.oauth.jsonc) |
 
 > **Status:** both deployments typecheck, bundle, and deploy clean. Secrets are set via `wrangler secret put` and are **never** committed to this repo.
 
@@ -39,19 +39,19 @@ This repo ships **two deployments from the same code**:
 client                         bearer worker (src/index.ts)
 Claude Code / Desktop / curl ── Authorization: Bearer <MCP_AUTH_TOKEN> ──┐
                                                                           │
-Claude.ai web ── OAuth 2.1 (passphrase) ── oauth worker (src/oauth.ts) ──┤
+Claude.ai web ── OAuth 2.1 (SR login) ── oauth worker (src/oauth.ts) ──┤
                                                                           ▼
                                               SignRequestMCP (McpAgent, Durable Object)
                                                 • registerTools(server, client)  ← tools.ts
                                                 • SignRequestClient               ← signrequest.ts
                                                                           │
-                                                Authorization: Token <SIGNREQUEST_TOKEN>
+                     bearer: Token <SIGNREQUEST_TOKEN> · oauth: Bearer <user's SignRequest token>
                                                                           ▼
                                                           SignRequest REST API v1
 ```
 
 - **`McpAgent` + Durable Object.** MCP session state lives in a Cloudflare Durable Object (SQLite-backed, migration `v1`). Both workers bind it as `MCP_OBJECT` → class `SignRequestMCP`.
-- **Shared tool layer.** `registerTools()` and `SignRequestClient` are plain TypeScript with no Worker-specific imports, so the bearer worker, the OAuth worker, and a local stdio build all share them.
+- **Shared tool layer.** `registerTools()` and `SignRequestClient` are plain TypeScript with no Worker-specific imports, so both workers share them.
 - **`src/ai-stub.ts`** aliases the unused optional `ai` peer dependency of `agents` out of the bundle.
 
 ---
@@ -74,10 +74,7 @@ OAuth worker (`signrequest-mcp-oauth`) — see [OAuth worker](#oauth-worker-clau
 
 **Bearer worker** is gated by a **shared bearer token** (`MCP_AUTH_TOKEN`): fails closed (no secret → everything 401s), constant-time comparison, and the SignRequest token never leaves the Worker. Right for programmatic use, `mcp-remote`, Claude Code/Desktop.
 
-**OAuth worker** implements **OAuth 2.1** (PKCE + dynamic client registration) via [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) — the only model Claude.ai web accepts. Two sign-in modes:
-
-- **SignRequest login** (when `SR_CLIENT_ID` + `SR_CLIENT_SECRET` are set): *Connect* sends you to SignRequest's own login + consent screen. Each user then acts with **their own** SignRequest OAuth2 token (sent as `Bearer`); no passphrase and no shared API token. SignRequest's token is refreshed whenever Claude refreshes the connector's token.
-- **Passphrase** (fallback): a single shared `APP_PASSPHRASE` on the consent screen, acting with the team `SIGNREQUEST_TOKEN`.
+**OAuth worker** implements **OAuth 2.1** (PKCE + dynamic client registration) via [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) — the only model Claude.ai web accepts. Sign-in is **SignRequest's own login** (`SR_CLIENT_ID` + `SR_CLIENT_SECRET`): *Connect* sends you to SignRequest's login + consent screen, and each user acts with **their own** SignRequest OAuth2 token (sent as `Bearer`), refreshed whenever Claude refreshes the connector's token. No shared API token. Without those secrets `/authorize` fails closed with a 503. (The shared-passphrase mode was removed in 1.6.0.)
 
 ---
 
@@ -125,7 +122,7 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 
 | Tool | Purpose | Input | Class |
 |------|---------|-------|-------|
-| `signrequest_get_document` | Get a document — conversion status, signed-PDF URL, security hash, signing log (`compact?` = trimmed summary) | `uuid`, `compact?` | read-only |
+| `signrequest_get_document` | Get a document — compact summary by default (status, signers, signed-PDF + signing-log URLs, callback URL); `compact=false` for the full object | `uuid`, `compact?` | read-only |
 | `signrequest_list_documents` | List documents (most recent first) | `page?`, `external_id?` | read-only |
 | `signrequest_delete_document` | **Permanently delete** a document + its signature requests + stored file | `uuid` | **destructive** |
 | `signrequest_list_templates` | List templates; use a template's resource URL as `template` above | `page?` | read-only |
@@ -158,9 +155,9 @@ Send a signature request for an **existing** document. *Write · sends email.* F
 | `signrequest_create_webhook` | Subscribe a callback URL to one event type | `event_type`, `callback_url`, `name?`, `integration?`, `dry_run?` | write |
 | `signrequest_update_webhook` | PATCH a subscription; `replace=true` → PUT | `uuid` + fields, `replace?`, `dry_run?` | write · destructive |
 | `signrequest_delete_webhook` | Delete a subscription | `uuid`, `dry_run?` | write · destructive |
-| `signrequest_webhook_health` | Subscriptions + team callback URL + recent deliveries by HTTP status, with failures listed | `pages?` | read-only |
+| `signrequest_webhook_health` | Subscriptions + team callback URL + recent deliveries by HTTP status, failures listed and grouped by the receiving callback URL | `pages?` | read-only |
 
-> SignRequest's event log doesn't record *which* URL a delivery went to — `webhook_health` puts the subscriptions and the failures side by side so you can work it out.
+> SignRequest's event log doesn't record *which* URL a delivery went to. `webhook_health` looks up each failing document (up to 20) and groups failures under the document's own `events_callback_url`, or the team's when the document has none — a per-document URL pointing at a dead receiver shows up as one row.
 
 ### Attachments
 
@@ -186,7 +183,7 @@ These compose the raw endpoints into a single call each — they encode the "fin
 | `signrequest_get_documents` | Batch-fetch up to 50 documents as **compact** summaries (fewer round-trips, less context) | `uuids[]` | read-only |
 | `signrequest_create_embedded_signing_links` | **Safe link generator** — forces `disable_emails` + embedded signing for every signer and returns each `embed_url`; **no one is emailed** | doc source *or* `document`, `signers[]` | write · no email |
 
-**Safety flags:** `quick_create` / `send` / `resend` accept `dry_run` (preview who *would* be emailed, send nothing); `quick_create` accepts `disable_emails`; `get_document` accepts `compact`.
+**Safety flags:** `quick_create` / `send` / `resend` accept `dry_run` (preview who *would* be emailed, send nothing); `quick_create` accepts `disable_emails`; `get_document` is compact unless you pass `compact=false`.
 
 ### Campaign-scale & operations
 
@@ -215,7 +212,7 @@ Used by `signrequest_quick_create` and `signrequest_send`:
 | `email` | string (email) | **required** |
 | `first_name`, `last_name` | string | |
 | `order` | int | signing order; lower signs first. The sender is always order `0` |
-| `language` | string | `en, en-gb, nl, fr, de, da, fi, hu, it, no, pl, pt, es, sv`. **Hebrew is not supported.** |
+| `language` | string | `en, en-gb, nl, fr, de, da, fi, hu, it, no, pl, pt, es, sv`, plus `he` — accepted by the API (documents in production use it) although SignRequest's published list omits it. |
 | `force_language` | boolean | |
 | `message` | string | per-signer message |
 | `redirect_url` | string (url) | redirect after signing |
@@ -277,11 +274,10 @@ Set via `npx wrangler secret put <NAME>` (secrets) or a `[vars]` block (non-secr
 
 | Name | Worker | Required | Purpose |
 |------|--------|----------|---------|
-| `SIGNREQUEST_TOKEN` | bearer ✅ · oauth (passphrase mode) | ✅ | Team-scoped SignRequest API token |
+| `SIGNREQUEST_TOKEN` | bearer | ✅ | Team-scoped SignRequest API token |
 | `MCP_AUTH_TOKEN` | bearer | ✅ | Shared bearer clients send as `Authorization: Bearer <…>` |
-| `SR_CLIENT_ID`, `SR_CLIENT_SECRET` | oauth | login mode | SignRequest OAuth2 application — turns on SignRequest login |
-| `APP_PASSPHRASE` | oauth | passphrase mode | Passphrase entered on the OAuth consent screen |
-| `SIGNREQUEST_TEAM` | oauth | **needed for login mode** | Team subdomain (var in `wrangler.oauth.jsonc`); calls go to `https://<team>.signrequest.com/api/v1`. Without it a login token sees no events, gets 403 on the audit log, and only sees documents tied to the user |
+| `SR_CLIENT_ID`, `SR_CLIENT_SECRET` | oauth | ✅ | SignRequest OAuth2 application used for sign-in |
+| `SIGNREQUEST_TEAM` | oauth | ✅ | Team subdomain (var in `wrangler.oauth.jsonc`); calls go to `https://<team>.signrequest.com/api/v1`. Without it a login token sees no events, gets 403 on the audit log, and only sees documents tied to the user |
 | `OAUTH_KV` (binding) | oauth | ✅ | KV namespace storing OAuth grants/registrations |
 | `SIGNREQUEST_FROM_EMAIL` | both | optional | Default sender, so callers can omit `from_email` |
 | `SIGNREQUEST_BASE_URL` | both | optional | Override API base (default `https://signrequest.com/api/v1`) |
@@ -373,7 +369,7 @@ The **bearer** worker can't be added to Claude.ai web (its connector UI requires
 1. Deploy it and set its secrets — see [OAuth worker](#oauth-worker-claudeai-web).
 2. In Claude.ai → **Settings → Connectors → Add custom connector**, enter the MCP URL:
    `https://signrequest-mcp-oauth.<subdomain>.workers.dev/mcp`
-3. Claude.ai discovers OAuth automatically (dynamic client registration) and sends you to the consent screen. Enter your **passphrase** to authorize.
+3. Claude.ai discovers OAuth automatically (dynamic client registration) and sends you to SignRequest's login. Sign in and approve access.
 
 ### Programmatic
 
@@ -383,12 +379,12 @@ Any HTTP MCP client works — send `Authorization: Bearer <MCP_AUTH_TOKEN>` and 
 
 ## OAuth worker (Claude.ai web)
 
-`signrequest-mcp-oauth` is the same MCP server fronted by an OAuth 2.1 provider. With `SR_CLIENT_ID`/`SR_CLIENT_SECRET` set it signs users in with SignRequest itself; otherwise it falls back to a shared passphrase. The health check (`GET /`) reports the version and which mode is live. Routes:
+`signrequest-mcp-oauth` is the same MCP server fronted by an OAuth 2.1 provider. It signs users in with SignRequest itself (`SR_CLIENT_ID`/`SR_CLIENT_SECRET`). The health check (`GET /`) reports the version and whether sign-in is configured. Routes:
 
 | Route | Purpose |
 |-------|---------|
 | `GET /` | health check (no auth) |
-| `GET`/`POST` `/authorize` | hand-off to SignRequest login (or the passphrase screen) |
+| `GET /authorize` | hand-off to SignRequest login |
 | `GET /callback` | SignRequest OAuth2 redirect target |
 | `/token`, `/register`, `/.well-known/oauth-*` | OAuth endpoints (handled by the provider) |
 | `POST /mcp` | MCP Streamable HTTP, OAuth-protected (no SSE on this worker) |
@@ -399,23 +395,17 @@ Deploy alongside the bearer worker:
 # One-time: create the KV namespace the provider needs, then put its id in wrangler.oauth.jsonc
 npx wrangler kv namespace create signrequest-mcp-oauth   # → { "binding": ..., "id": "<paste into kv_namespaces>" }
 
-# Secrets (paste at the prompt; -c selects the OAuth worker):
-npx wrangler secret put SIGNREQUEST_TOKEN -c wrangler.oauth.jsonc
-npx wrangler secret put APP_PASSPHRASE   -c wrangler.oauth.jsonc
-
 npx wrangler deploy -c wrangler.oauth.jsonc
 ```
 
-**SignRequest login (recommended):** create an OAuth2 application at <https://signrequest.com/api/v1/oauth2/applications/> — client type *Confidential*, grant type *Authorization code*, redirect URI `https://signrequest-mcp-oauth.<subdomain>.workers.dev/callback` — then:
+**SignRequest login:** create an OAuth2 application at <https://signrequest.com/api/v1/oauth2/applications/> — client type *Confidential*, grant type *Authorization code*, redirect URI `https://signrequest-mcp-oauth.<subdomain>.workers.dev/callback` — then:
 
 ```bash
 npx wrangler secret put SR_CLIENT_ID     -c wrangler.oauth.jsonc
 npx wrangler secret put SR_CLIENT_SECRET -c wrangler.oauth.jsonc
 ```
 
-Re-connect the connector in Claude after switching modes. Grants made with the passphrase keep using `SIGNREQUEST_TOKEN` until they're reconnected.
-
-`APP_PASSPHRASE` fails closed — if unset, the consent screen rejects every attempt. Then add the connector in Claude.ai per [Claude Web](#claude-web).
+Set `SIGNREQUEST_TEAM` (a var in `wrangler.oauth.jsonc`) to your team subdomain. A connection made before 1.5.2 with the old passphrase has no SignRequest token and gets a "reconnect" error on every tool — disconnect and reconnect it. Then add the connector in Claude.ai per [Claude Web](#claude-web).
 
 ---
 
@@ -432,8 +422,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck + tests
 ## Caveats
 
 - **Existing-token-only.** SignRequest is owned by Box and is in maintenance mode; this assumes you already have a working team API token.
-- **No Hebrew** in signer email/UI language (see [Signer object](#signer-object)).
-- **Single-user OAuth.** The OAuth worker gates on one shared passphrase — fine for a personal connector, not multi-tenant. Swap the consent handler for a real IdP (GitHub/Google/etc.) if you need per-user identity.
+- **One team per OAuth deployment.** A SignRequest login spans every team the user is in; `SIGNREQUEST_TEAM` pins the connector to one.
 - **Dependency versions.** `agents@^0.30.1` + `@modelcontextprotocol/sdk@1.32.1` (exact — `agents` pins it) + `zod@^4.6.7` + `@cloudflare/workers-oauth-provider@^1.2.4`; `undici` is pinned via `overrides`. `npm audit` is clean. All of `agents`' AI peers are optional and never bundled.
 
 ---
@@ -443,7 +432,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck + tests
 ```
 src/
   index.ts        Bearer worker entry — routing, bearer gate, McpAgent/Durable Object
-  oauth.ts        OAuth worker entry — OAuthProvider + passphrase consent + McpAgent
+  oauth.ts        OAuth worker entry — OAuthProvider + SignRequest login hand-off + McpAgent
   tools.ts        registerTools() — the 47 tool definitions + Zod schemas + helpers (shared)
   signrequest.ts  SignRequestClient — dependency-free REST client, fetch-only, mapLimit/pagination (shared)
   ai-stub.ts      stubs the unused `ai` peer dep out of the bundle
