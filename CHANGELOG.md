@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0 — 2026-11-02 — Bring-your-own-key on the bearer worker
+## 1.8.0 — 2026-11-02 — Bring-your-own-key on the bearer worker
 
 ### Added
 - Bearer worker: a caller can send their **own** SignRequest API token (`X-SignRequest-Token`, or `Authorization: Token <token>`; optional `X-SignRequest-Team: <subdomain>`) and act with it, with no `MCP_AUTH_TOKEN`. Shared MCP worker standard §3A: one deployment, many SignRequest accounts. `MCP_BYO_KEYS="false"` turns it off.
@@ -10,6 +10,16 @@
 - `SIGNREQUEST_TOKEN` and `MCP_AUTH_TOKEN` are now an optional fallback pair. Existing clients (`Authorization: Bearer <MCP_AUTH_TOKEN>`) work unchanged. With no team token configured, a caller without their own token gets a clear 401.
 - A caller's own token never uses `SIGNREQUEST_BASE_URL`: the API base is their team subdomain (validated) or the public host.
 - `GET /` reports the credential modes (`header`, `fallback`).
+
+## 1.7.0 — 2026-11-02 — Aligned with the shared MCP worker standard
+
+### Changed
+- **Tool renames** so every read tool starts with a read verb: `signrequest_webhook_health` → `signrequest_get_webhook_health`, `signrequest_campaign_status` → `signrequest_get_campaign_status`, `signrequest_wait_until_signed` → `signrequest_get_final_status`. Old names stay callable (hidden from `tools/list`) until 2.0.
+- Every read tool now sets `destructiveHint: false`; `tests/contract.test.ts` asserts all four annotations and `readOnlyHint` ⇔ read verb for every tool, over a real MCP client/server pair.
+- `GET /health` (JSON `{ok, service, version, warnings}`) on both workers.
+- `agents` pinned to exactly 0.30.1; `compatibility_date` 2025-05-01 → 2026-10-01.
+- CI: every push and PR, Node 22, `wrangler deploy --dry-run` for both configs, concurrency + docs `paths-ignore`.
+- Tests: bearer gate (401 + `WWW-Authenticate`, fail-closed, `/health`), version mirror (VERSION = package.json = CHANGELOG). Added `.dev.vars.example`.
 
 ## 1.6.0 — 2026-11-02 — Webhook failure attribution, compact documents, passphrase code removed
 

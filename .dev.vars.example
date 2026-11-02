@@ -1,0 +1,10 @@
+# Copy to .dev.vars for `npm run dev` (bearer worker). Never commit .dev.vars.
+SIGNREQUEST_TOKEN=your-team-api-token
+MCP_AUTH_TOKEN=a-long-random-string
+# Optional
+# SIGNREQUEST_FROM_EMAIL=sender@example.com
+# MCP_READONLY=true
+
+# OAuth worker (wrangler dev -c wrangler.oauth.jsonc)
+# SR_CLIENT_ID=
+# SR_CLIENT_SECRET=

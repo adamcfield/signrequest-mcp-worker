@@ -12,6 +12,7 @@
  *
  * Endpoints:
  *   GET  /            -> public health check (no auth)
+ *   GET  /health      -> JSON health {ok, service, version, warnings} (no auth)
  *   POST /mcp         -> MCP Streamable HTTP   (bearer required)
  *   GET  /sse         -> MCP SSE (legacy)      (bearer required)
  *
@@ -106,7 +107,13 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Public, unauthenticated health check.
+    // Public, unauthenticated health check (JSON, shared standard §8.2). Never echoes secret values.
+    if (request.method === "GET" && url.pathname === "/health") {
+      const warnings: string[] = [];
+      if (!env.MCP_AUTH_TOKEN) warnings.push("MCP_AUTH_TOKEN is not set: every MCP request is rejected.");
+      if (!env.SIGNREQUEST_TOKEN) warnings.push("SIGNREQUEST_TOKEN is not set: every tool call will fail.");
+      return Response.json({ ok: warnings.length === 0, service: "signrequest-mcp", version: VERSION, warnings });
+    }
     if (request.method === "GET" && url.pathname === "/") {
       const modes = [env.MCP_BYO_KEYS === "false" ? null : "header", env.SIGNREQUEST_TOKEN ? "fallback" : null].filter(Boolean).join(",");
       return new Response(`signrequest-mcp worker: ok (v${VERSION}, credentials: ${modes || "none"})`, {
