@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.0 — 2026-11-02 — Bring-your-own-key on the bearer worker
+
+### Added
+- Bearer worker: a caller can send their **own** SignRequest API token (`X-SignRequest-Token`, or `Authorization: Token <token>`; optional `X-SignRequest-Team: <subdomain>`) and act with it, with no `MCP_AUTH_TOKEN`. Shared MCP worker standard §3A: one deployment, many SignRequest accounts. `MCP_BYO_KEYS="false"` turns it off.
+- The token rides in the session's props and is re-read on every request; a session's props are replaced whenever the presented credential changes, so a session id never lends one caller's token to another.
+
+### Changed
+- `SIGNREQUEST_TOKEN` and `MCP_AUTH_TOKEN` are now an optional fallback pair. Existing clients (`Authorization: Bearer <MCP_AUTH_TOKEN>`) work unchanged. With no team token configured, a caller without their own token gets a clear 401.
+- A caller's own token never uses `SIGNREQUEST_BASE_URL`: the API base is their team subdomain (validated) or the public host.
+- `GET /` reports the credential modes (`header`, `fallback`).
+
 ## 1.6.0 — 2026-11-02 — Webhook failure attribution, compact documents, passphrase code removed
 
 ### Added
