@@ -1,0 +1,16 @@
+// Volta Cloudflare account: parallel COPY of this worker (the personal deployment is untouched).
+// Consumed by scripts/deploy-volta.mjs and .github/workflows/deploy-volta.yml.
+// Only what differs from the committed wrangler config lives here. Empty KV ids = not ready:
+// the workflow skips until they are filled in (`node scripts/deploy-volta.mjs --plan` prints
+// the create commands). KV ids are identifiers, not secrets. Crons stay OFF on the copy while
+// both deployments run, so scheduled side effects don't happen twice.
+{
+  "configs": {
+    "wrangler.jsonc": { "domain": "signrequest.mcp.volta.solar" },
+    "wrangler.oauth.jsonc": {
+      "domain": "signrequest-oauth.mcp.volta.solar",
+      "kv": { "OAUTH_KV": "" },
+      "vars": { "MCP_RESOURCE": "https://signrequest-oauth.mcp.volta.solar/mcp" }
+    }
+  }
+}

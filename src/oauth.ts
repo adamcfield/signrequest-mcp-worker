@@ -251,13 +251,23 @@ const defaultHandler = {
  */
 export const MCP_RESOURCE = "https://signrequest-mcp-oauth.adamcfield.workers.dev/mcp";
 
+/**
+ * The resource this deployment serves. A parallel copy on another hostname (the Volta account
+ * copy, deploy/volta.jsonc) sets the `MCP_RESOURCE` var to its own /mcp URL; unset, it is the
+ * canonical URL above, so the existing deployment and its grants are unchanged.
+ */
+export function resourceFor(env: { MCP_RESOURCE?: string }): string {
+  const v = env.MCP_RESOURCE?.trim();
+  return v ? v : MCP_RESOURCE;
+}
+
 export default new OAuthProvider({
   // Streamable HTTP only: every API route must sit under the resource path, and
   // claude.ai uses /mcp. Legacy SSE stays on the bearer worker.
   apiHandlers: {
     "/mcp": SignRequestMCP.serve("/mcp"),
   },
-  resourceMetadata: { resource: MCP_RESOURCE },
+  resourceMetadata: { resource: resourceFor(workerEnv as unknown as { MCP_RESOURCE?: string }) },
   defaultHandler: defaultHandler as never,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
