@@ -4,7 +4,7 @@ Guide for AI coding agents working in this repo.
 
 ## What this is
 A remote MCP server on Cloudflare Workers covering the whole SignRequest REST API v1 (47 tools), deployed as **two workers from shared code**:
-- **`signrequest-mcp`** (`src/index.ts`, `wrangler.jsonc`): bearer-gated (`MCP_AUTH_TOKEN`, constant-time, fails closed), acts with the team API token `SIGNREQUEST_TOKEN` (`Authorization: Token …`). Serves `/mcp` (Streamable HTTP) and `/sse` (legacy).
+- **`signrequest-mcp`** (`src/index.ts`, `wrangler.jsonc`): bring-your-own-key first: a caller's own token (`X-SignRequest-Token` / `Authorization: Token`, `src/byo.ts`) goes into the session props and is used as-is, no bearer needed. Otherwise bearer-gated (`MCP_AUTH_TOKEN`, constant-time, fails closed) and acts with the fallback team token `SIGNREQUEST_TOKEN`. `__unsafe_ensureInitialized` replaces the session's props whenever the credential changes. Serves `/mcp` (Streamable HTTP) and `/sse` (legacy).
 - **`signrequest-mcp-oauth`** (`src/oauth.ts`, `wrangler.oauth.jsonc`): the claude.ai connector. `@cloudflare/workers-oauth-provider` with **SignRequest's own OAuth2 login** as the upstream (`SR_CLIENT_ID`/`SR_CLIENT_SECRET`); each user acts with their own token (`Bearer`). `/mcp` only.
 
 Both bind the Durable Object `MCP_OBJECT` → class `SignRequestMCP` (migration `v1`, `new_sqlite_classes`); keep the migrations in both configs in sync.

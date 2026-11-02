@@ -73,7 +73,11 @@ OAuth worker (`signrequest-mcp-oauth`) — see [OAuth worker](#oauth-worker-clau
 
 ## Authentication
 
-**Bearer worker** is gated by a **shared bearer token** (`MCP_AUTH_TOKEN`): fails closed (no secret → everything 401s), constant-time comparison, and the SignRequest token never leaves the Worker. Right for programmatic use, `mcp-remote`, Claude Code/Desktop.
+**Bearer worker** — two ways in:
+- **Bring your own key.** Send your own SignRequest API token as `X-SignRequest-Token: <token>` (or `Authorization: Token <token>`), plus `X-SignRequest-Team: <subdomain>` for a team token. You act as yourself; no `MCP_AUTH_TOKEN` needed, because SignRequest authenticates you. Anyone with a SignRequest token can use the same deployment. `MCP_BYO_KEYS="false"` turns this off.
+- **Shared fallback.** Without a token of your own, the worker uses its team token (`SIGNREQUEST_TOKEN`), gated by a **shared bearer token** (`MCP_AUTH_TOKEN`): fails closed, constant-time comparison, and the team token never leaves the Worker.
+
+Right for programmatic use, `mcp-remote`, Claude Code/Desktop.
 
 **OAuth worker** implements **OAuth 2.1** (PKCE + dynamic client registration) via [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) — the only model Claude.ai web accepts. Sign-in is **SignRequest's own login** (`SR_CLIENT_ID` + `SR_CLIENT_SECRET`): *Connect* sends you to SignRequest's login + consent screen, and each user acts with **their own** SignRequest OAuth2 token (sent as `Bearer`), refreshed whenever Claude refreshes the connector's token. No shared API token. Without those secrets `/authorize` fails closed with a 503. (The shared-passphrase mode was removed in 1.6.0.)
 
@@ -277,8 +281,9 @@ Set via `npx wrangler secret put <NAME>` (secrets) or a `[vars]` block (non-secr
 
 | Name | Worker | Required | Purpose |
 |------|--------|----------|---------|
-| `SIGNREQUEST_TOKEN` | bearer | ✅ | Team-scoped SignRequest API token |
-| `MCP_AUTH_TOKEN` | bearer | ✅ | Shared bearer clients send as `Authorization: Bearer <…>` |
+| `SIGNREQUEST_TOKEN` | bearer | optional | Fallback team-scoped SignRequest API token for callers who don't bring their own |
+| `MCP_AUTH_TOKEN` | bearer | with the fallback | Shared bearer that gates the fallback token (`Authorization: Bearer <…>`) |
+| `MCP_BYO_KEYS` | bearer | — | Exactly `"false"` ignores caller tokens (`X-SignRequest-Token`) |
 | `SR_CLIENT_ID`, `SR_CLIENT_SECRET` | oauth | ✅ | SignRequest OAuth2 application used for sign-in |
 | `SIGNREQUEST_TEAM` | oauth | ✅ | Team subdomain (var in `wrangler.oauth.jsonc`); calls go to `https://<team>.signrequest.com/api/v1`. Without it a login token sees no events, gets 403 on the audit log, and only sees documents tied to the user |
 | `OAUTH_KV` (binding) | oauth | ✅ | KV namespace storing OAuth grants/registrations |

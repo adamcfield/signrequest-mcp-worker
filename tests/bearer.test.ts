@@ -11,7 +11,7 @@ vi.mock("agents/mcp", () => ({
 
 const { default: worker } = await import("../src/index.js");
 const { VERSION } = await import("../src/tools.js");
-const ctx = {} as ExecutionContext;
+const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const call = (path: string, env: Record<string, unknown>, headers: Record<string, string> = {}) =>
   worker.fetch(new Request(`https://w.example.com${path}`, { method: path === "/mcp" ? "POST" : "GET", headers }), env as never, ctx);
 
