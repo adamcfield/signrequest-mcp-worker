@@ -251,6 +251,9 @@ export const RENAMES: Readonly<Record<string, string>> = {
 /** get_webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
 const MAX_CALLBACK_LOOKUPS = 20;
 
+/** webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
+const MAX_CALLBACK_LOOKUPS = 20;
+
 export interface RegisterToolsOptions {
   /** Default sender email if a tool call omits from_email. */
   defaultFromEmail?: string;
