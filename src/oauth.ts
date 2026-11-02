@@ -12,6 +12,7 @@
  *
  * Routes:
  *   GET  /                         health check (no auth)
+ *   GET  /health                   JSON health {ok, service, version, warnings} (no auth)
  *   GET  /authorize                hand-off to SignRequest's login (this file)
  *   GET  /callback                 SignRequest OAuth2 redirect target (this file)
  *   /token, /register, /.well-known/oauth-*   handled by OAuthProvider
@@ -233,6 +234,14 @@ const defaultHandler = {
     const url = new URL(request.url);
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname === "/callback" && request.method === "GET") return handleCallback(request, env);
+    if (url.pathname === "/health" && request.method === "GET") {
+      const warnings: string[] = [];
+      if (!loginMode(env)) warnings.push("SR_CLIENT_ID / SR_CLIENT_SECRET are not set: sign-in is disabled.");
+      if (!env.SIGNREQUEST_TEAM && !env.SIGNREQUEST_BASE_URL) {
+        warnings.push("SIGNREQUEST_TEAM is not set: login tokens see no events and get 403 on the audit log.");
+      }
+      return Response.json({ ok: warnings.length === 0, service: "signrequest-mcp-oauth", version: VERSION, warnings });
+    }
     if (url.pathname === "/" && request.method === "GET") {
       const mode = loginMode(env) ? "SignRequest login" : "not configured";
       return new Response(`signrequest-mcp-oauth worker: ok (v${VERSION}, sign-in: ${mode}, OAuth-gated MCP at /mcp)`, {

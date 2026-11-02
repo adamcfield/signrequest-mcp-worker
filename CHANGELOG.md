@@ -12,6 +12,14 @@
 - OAuth worker: the passphrase / shared `SIGNREQUEST_TOKEN` sign-in code is gone (it was retired operationally in 1.5.2). Without `SR_CLIENT_ID`/`SR_CLIENT_SECRET`, `/authorize` fails closed with a 503. A pre-1.5.2 passphrase grant gets a clear "reconnect" error instead of a SignRequest 401.
 - README, SECURITY.md and code comments updated to match (no passphrase, no stdio server). Added `CLAUDE.md`.
 
+### Changed (shared MCP worker standard)
+- **Tool renames** so every read tool starts with a read verb: `signrequest_webhook_health` → `signrequest_get_webhook_health`, `signrequest_campaign_status` → `signrequest_get_campaign_status`, `signrequest_wait_until_signed` → `signrequest_get_final_status`. Old names stay callable (hidden from `tools/list`) until 2.0.
+- Every read tool now sets `destructiveHint: false`; `tests/contract.test.ts` asserts all four annotations and `readOnlyHint` ⇔ read verb for every tool, over a real MCP client/server pair.
+- `GET /health` (JSON `{ok, service, version, warnings}`) on both workers.
+- `agents` pinned to exactly 0.30.1; `compatibility_date` 2025-05-01 → 2026-10-01.
+- CI: every push and PR, Node 22, `wrangler deploy --dry-run` for both configs, concurrency + docs `paths-ignore`.
+- Tests: bearer gate (401 + `WWW-Authenticate`, fail-closed, `/health`), version mirror (VERSION = package.json = CHANGELOG). Added `.dev.vars.example`.
+
 ### Fixed
 - `compactDoc().signing_log_url` returned the whole `signing_log` object (`{pdf, security_hash}`) instead of its PDF URL.
 

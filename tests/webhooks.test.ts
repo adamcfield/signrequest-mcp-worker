@@ -154,7 +154,7 @@ describe("tool registration", () => {
     );
     const { server, tools } = fakeServer();
     registerTools(server, client);
-    const res = await tools.get("signrequest_webhook_health")!.handler({});
+    const res = await tools.get("signrequest_get_webhook_health")!.handler({});
     const out = JSON.parse(res.content[0].text);
     expect(out.deliveries_by_http_status).toEqual({ "200": 1, "404": 1 });
     expect(out.failed_deliveries.map((f: any) => f.uuid)).toEqual(["e2"]);
@@ -183,7 +183,7 @@ describe("webhook_health visibility", () => {
     );
     const { server, tools } = fakeServer();
     registerTools(server, new SignRequestClient({ token: "t" }));
-    const out = JSON.parse((await tools.get("signrequest_webhook_health")!.handler({})).content[0].text);
+    const out = JSON.parse((await tools.get("signrequest_get_webhook_health")!.handler({})).content[0].text);
     expect(out.warnings?.[0]).toMatch(/No events visible/);
   });
 
@@ -191,7 +191,7 @@ describe("webhook_health visibility", () => {
     const calls = capture({ count: 0, next: null, results: [] });
     const { server, tools } = fakeServer();
     registerTools(server, new SignRequestClient({ token: "t" }));
-    await tools.get("signrequest_webhook_health")!.handler({});
+    await tools.get("signrequest_get_webhook_health")!.handler({});
     expect(calls.some((c) => c.url.endsWith("/events/?page=1&limit=100"))).toBe(true);
   });
 });
@@ -224,7 +224,7 @@ describe("webhook_health callback attribution", () => {
     );
     const { server, tools } = fakeServer();
     registerTools(server, new SignRequestClient({ token: "t" }));
-    const out = JSON.parse((await tools.get("signrequest_webhook_health")!.handler({})).content[0].text);
+    const out = JSON.parse((await tools.get("signrequest_get_webhook_health")!.handler({})).content[0].text);
     expect(out.failures_by_callback_url).toEqual([
       { callback_url: "https://old.test/cb", source: "document", failures: 2, by_http_status: { "404": 2 } },
       { callback_url: "https://team.test/cb", source: "team", failures: 1, by_http_status: { "500": 1 } },

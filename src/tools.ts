@@ -6,6 +6,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   SignRequestClient,
@@ -119,7 +120,7 @@ export function redactApiToken(t: AnyRec): AnyRec {
   return { ...rest, key_last4: typeof key === "string" && key.length > 8 ? key.slice(-4) : null };
 }
 
-/** Build a one-shot signer summary (shared by get_signer_summary + campaign_status). */
+/** Build a one-shot signer summary (shared by get_signer_summary + get_campaign_status). */
 export async function buildSignerSummary(
   client: SignRequestClient,
   email: string,
@@ -226,9 +227,28 @@ export const VERSION = "1.6.0";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
-const READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
 
-/** webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
+/**
+ * Tool-name contract (shared MCP worker standard §4.3): the verb is the token after
+ * `signrequest_`, and readOnlyHint is true exactly when that verb is a read verb.
+ * Read-only consumers (e.g. a bot that filters to read tools) rely on both agreeing.
+ */
+export const READ_VERBS = new Set([
+  "get", "list", "search", "read", "query", "describe", "count", "find", "trace", "audit", "whoami", "health",
+]);
+
+/**
+ * Renamed tools: old name -> new name. Old names stay callable (claude.ai caches tool
+ * names per connector) but are never listed. Remove in 2.0.
+ */
+export const RENAMES: Readonly<Record<string, string>> = {
+  signrequest_webhook_health: "signrequest_get_webhook_health",
+  signrequest_campaign_status: "signrequest_get_campaign_status",
+  signrequest_wait_until_signed: "signrequest_get_final_status",
+};
+
+/** get_webhook_health: max distinct failing documents looked up to attribute failures to a callback URL. */
 const MAX_CALLBACK_LOOKUPS = 20;
 
 export interface RegisterToolsOptions {
@@ -244,6 +264,29 @@ export function registerTools(
   client: SignRequestClient,
   opts: RegisterToolsOptions = {},
 ): void {
+  // Hidden aliases: capture the SDK's tools/call handler as it is installed (on the first
+  // registerTool), then wrap it so a renamed tool's old name dispatches to the new one.
+  // Public API only (setRequestHandler replaces a handler); test fakes have no `server`.
+  const low = (server as { server?: { setRequestHandler?: (schema: unknown, handler: any) => void } }).server;
+  const setHandler = low?.setRequestHandler?.bind(low);
+  let sdkCallTool: ((req: any, extra: any) => unknown) | undefined;
+  const registered = new Set<string>();
+  if (low && setHandler) {
+    low.setRequestHandler = (schema, handler) => {
+      if (schema === CallToolRequestSchema) sdkCallTool = handler;
+      return setHandler(schema, handler);
+    };
+  }
+  const realRegister = server.registerTool.bind(server);
+  server = Object.create(server, {
+    registerTool: {
+      value: ((name: string, ...rest: unknown[]) => {
+        registered.add(name);
+        return (realRegister as (...a: unknown[]) => unknown)(name, ...rest);
+      }) as McpServer["registerTool"],
+    },
+  });
+
   const resolveFromEmail = (provided?: string): string => {
     const v = provided ?? opts.defaultFromEmail;
     if (!v) {
@@ -610,7 +653,7 @@ export function registerTools(
     "signrequest_list_webhooks",
     {
       description:
-        "List the webhook SUBSCRIPTIONS configured for the team (event_type -> callback_url, name, integration). This is the subscription config, not the delivery log — use signrequest_list_events or signrequest_webhook_health for deliveries. Set all=true to follow every page.",
+        "List the webhook SUBSCRIPTIONS configured for the team (event_type -> callback_url, name, integration). This is the subscription config, not the delivery log — use signrequest_list_events or signrequest_get_webhook_health for deliveries. Set all=true to follow every page.",
       inputSchema: {
         page: z.number().int().positive().optional(),
         limit: z.number().int().positive().max(100).optional().describe("Results per page."),
@@ -725,7 +768,7 @@ export function registerTools(
   );
 
   server.registerTool(
-    "signrequest_webhook_health",
+    "signrequest_get_webhook_health",
     {
       description:
         "Webhook diagnostics in one call: every subscription, the team-level events_callback_url, and recent event deliveries grouped by the receiver's HTTP status code — with failed deliveries listed (event, document, signer, code, timestamp). SignRequest's log doesn't record which URL an event went to, so failures are also grouped by the failing documents' own events_callback_url (falling back to the team URL), which usually pinpoints a dead receiver. Use when callbacks are missing or a receiver returns 4xx/5xx.",
@@ -1308,7 +1351,7 @@ export function registerTools(
   );
 
   server.registerTool(
-    "signrequest_campaign_status",
+    "signrequest_get_campaign_status",
     {
       description:
         "Roster-wide rollup: runs the signer-summary lookup for many people with bounded concurrency and returns aggregate counts (signed / pending / with-field-data) plus a per-person summary (status, signed-PDF, embed_url, filled fields). One call to drive a tracking dashboard instead of N search+get round-trips. Up to 200 emails.",
@@ -1383,7 +1426,7 @@ export function registerTools(
   );
 
   server.registerTool(
-    "signrequest_wait_until_signed",
+    "signrequest_get_final_status",
     {
       description:
         "Poll a document until it reaches a terminal state (signed / declined / cancelled), up to a bounded timeout — convenience for 'just sent, tell me when it's done'. For long waits use webhooks/events instead. Returns the final status and signed-PDF URL if signed.",
@@ -1392,7 +1435,7 @@ export function registerTools(
         timeout_seconds: z.number().int().min(1).max(25).optional().describe("Max wait (default 15, hard cap 25)."),
         interval_seconds: z.number().int().min(1).max(10).optional().describe("Poll interval (default 3)."),
       },
-      annotations: { title: "Wait until signed (bounded poll)", readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+      annotations: { title: "Get final status (bounded poll)", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ uuid, timeout_seconds, interval_seconds }) =>
       run(async () => {
@@ -1485,4 +1528,15 @@ export function registerTools(
       }
     },
   );
+
+  if (low && setHandler) {
+    low.setRequestHandler = setHandler;
+    if (sdkCallTool) {
+      const inner = sdkCallTool;
+      setHandler(CallToolRequestSchema, (req: any, extra: any) => {
+        const target = RENAMES[req?.params?.name];
+        return inner(target && registered.has(target) ? { ...req, params: { ...req.params, name: target } } : req, extra);
+      });
+    }
+  }
 }
