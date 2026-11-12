@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.0 — 2026-11-12 — Organisation connection with no secret to set
+
+### Changed
+- `/managed` (claude.ai managed authorization) is on out of the box on the OAuth worker: it generates its own seal key once and keeps it in a new Durable Object (`EMA_KEYS` → `EmaKeyStore`, migration `v2` in `wrangler.oauth.jsonc`). The org owner only pastes the Issuer URL and the team API token; nobody runs a terminal command.
+- `SIGNREQUEST_EMA_SECRET` is optional and still wins when set, so an existing setup keeps working.
+- Personal connections (SignRequest login, own API token, bearer worker) are unchanged and work alongside.
+- Shared `src/managed-auth.ts` updated to the fleet copy with the generated key.
+
 ## 1.9.0 — 2026-11-12 — Organisation connection (managed authorization) and API-token connect
 
 ### Added
