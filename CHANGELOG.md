@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.9.0 — 2026-11-12 — Organisation connection (managed authorization) and API-token connect
+
+### Added
+- **claude.ai managed authorization** on the OAuth worker (shared MCP worker standard §3C): a Claude Team/Enterprise owner opens `/managed`, pastes Claude's Issuer URL and one SignRequest **team API token** (+ team subdomain), and gets a Tenant ID with a copy button to paste into Claude. Members then use SignRequest with no sign-in screen and act with that team token. The token is checked with SignRequest before anything is saved, sealed in KV (`signrequest:` prefix) and needed again to change or remove the setup. Off until `SIGNREQUEST_EMA_SECRET` is set (never rotate it). Shared modules `src/managed-auth.ts` and `src/ui.ts` are fleet copies.
+- **Connect with an API token**: the connect page now also takes the user's own SignRequest API token (+ optional team subdomain), checked once with the same call `signrequest_whoami` makes. "Sign in with SignRequest" still appears when `SR_CLIENT_ID`/`SR_CLIENT_SECRET` are set, so the connector no longer needs a SignRequest OAuth app to work.
+- `signrequest_whoami` returns `credential_source` (`managed`, `api_token`, `signrequest_login`; `own_token`/`server_token` on the bearer worker), the token masked as first4…last4, and `team_subdomain`.
+- Pages in the fleet look (light/dark, logo + PNG favicon); errors keep what was typed, never the token.
+
+### Changed
+- `/health` on the OAuth worker: `ok` is true without the SignRequest OAuth app (API tokens always work); `signIn` lists the available ways in. `wrangler.oauth.jsonc` adds the `global_fetch_strictly_public` compatibility flag (needed for Claude's Client ID Metadata Documents).
+- Existing grants (SignRequest login) are unchanged; the resource URL is unchanged.
+- Bearer worker `/health`: a bring-your-own-key-only deployment (no `MCP_AUTH_TOKEN`/`SIGNREQUEST_TOKEN`, like the Volta copy) is healthy (`ok: true`, no warnings), so the Volta deploy's health check passes. `ok` is false only when `MCP_BYO_KEYS="false"` and the pair is missing.
+
+### Fixed
+- `src/oauth.ts` no longer exports the `MCP_RESOURCE` string or `resourceFor`: workerd treats every named export of the entry module as an entrypoint, and `wrangler dev` refused to start ("Incorrect type for map entry 'MCP_RESOURCE'").
+
 ## 1.8.1 — 2026-11-12 — Volta account copy
 
 ### Added

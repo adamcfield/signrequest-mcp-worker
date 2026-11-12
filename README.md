@@ -9,7 +9,7 @@ This repo ships **two deployments from the same code**:
 | Worker | Auth | Use it from | Entry |
 |--------|------|-------------|-------|
 | **`signrequest-mcp`** | static bearer token | Claude Code, Claude Desktop, programmatic | [`src/index.ts`](src/index.ts) · [`wrangler.jsonc`](wrangler.jsonc) |
-| **`signrequest-mcp-oauth`** | OAuth 2.1 (SignRequest login) | **Claude.ai web** custom connector | [`src/oauth.ts`](src/oauth.ts) · [`wrangler.oauth.jsonc`](wrangler.oauth.jsonc) |
+| **`signrequest-mcp-oauth`** | OAuth 2.1 (SignRequest login, own API token, or managed org connection) | **Claude.ai web** custom connector | [`src/oauth.ts`](src/oauth.ts) · [`wrangler.oauth.jsonc`](wrangler.oauth.jsonc) |
 
 > **Status:** both deployments typecheck, bundle, and deploy clean. Secrets are set via `wrangler secret put` and are **never** committed to this repo.
 
@@ -79,7 +79,7 @@ OAuth worker (`signrequest-mcp-oauth`) — see [OAuth worker](#oauth-worker-clau
 
 Right for programmatic use, `mcp-remote`, Claude Code/Desktop.
 
-**OAuth worker** implements **OAuth 2.1** (PKCE + dynamic client registration) via [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) — the only model Claude.ai web accepts. Sign-in is **SignRequest's own login** (`SR_CLIENT_ID` + `SR_CLIENT_SECRET`): *Connect* sends you to SignRequest's login + consent screen, and each user acts with **their own** SignRequest OAuth2 token (sent as `Bearer`), refreshed whenever Claude refreshes the connector's token. No shared API token. Without those secrets `/authorize` fails closed with a 503. (The shared-passphrase mode was removed in 1.6.0.)
+**OAuth worker** implements **OAuth 2.1** (PKCE + dynamic client registration) via [`@cloudflare/workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider) — the only model Claude.ai web accepts. *Connect* opens a connect page with up to two ways in: **Sign in with SignRequest** (only when `SR_CLIENT_ID` + `SR_CLIENT_SECRET` are set; each user acts with their own SignRequest OAuth2 token, sent as `Bearer` and refreshed whenever Claude refreshes the connector's token) and **Connect with API token** (the user's own SignRequest API token + optional team subdomain, checked once with SignRequest, sent as `Token`). Either way the credential lives only inside the user's encrypted grant. **Managed authorization** (1.9.0) connects a whole Claude Team/Enterprise organisation with one team API token, see [Organisation connection](#organisation-connection-managed-authorization). (The shared-passphrase mode was removed in 1.6.0.)
 
 ---
 
@@ -284,8 +284,9 @@ Set via `npx wrangler secret put <NAME>` (secrets) or a `[vars]` block (non-secr
 | `SIGNREQUEST_TOKEN` | bearer | optional | Fallback team-scoped SignRequest API token for callers who don't bring their own |
 | `MCP_AUTH_TOKEN` | bearer | with the fallback | Shared bearer that gates the fallback token (`Authorization: Bearer <…>`) |
 | `MCP_BYO_KEYS` | bearer | — | Exactly `"false"` ignores caller tokens (`X-SignRequest-Token`) |
-| `SR_CLIENT_ID`, `SR_CLIENT_SECRET` | oauth | ✅ | SignRequest OAuth2 application used for sign-in |
-| `SIGNREQUEST_TEAM` | oauth | ✅ | Team subdomain (var in `wrangler.oauth.jsonc`); calls go to `https://<team>.signrequest.com/api/v1`. Without it a login token sees no events, gets 403 on the audit log, and only sees documents tied to the user |
+| `SR_CLIENT_ID`, `SR_CLIENT_SECRET` | oauth | — | SignRequest OAuth2 application for "Sign in with SignRequest" (without it users connect with an API token) |
+| `SIGNREQUEST_EMA_SECRET` | oauth | — | Turns on managed authorization (`/managed`); seals the organisation's token. Never rotate it (every setup would need redoing) |
+| `SIGNREQUEST_TEAM` | oauth | — | For SignRequest **login** tokens: team subdomain (var in `wrangler.oauth.jsonc`); calls go to `https://<team>.signrequest.com/api/v1`. Without it a login token sees no events, gets 403 on the audit log, and only sees documents tied to the user |
 | `OAUTH_KV` (binding) | oauth | ✅ | KV namespace storing OAuth grants/registrations |
 | `SIGNREQUEST_FROM_EMAIL` | both | optional | Default sender, so callers can omit `from_email` |
 | `SIGNREQUEST_BASE_URL` | both | optional | Override API base (default `https://signrequest.com/api/v1`) |
@@ -385,6 +386,17 @@ Any HTTP MCP client works — send `Authorization: Bearer <MCP_AUTH_TOKEN>` and 
 
 ---
 
+## Organisation connection (managed authorization)
+
+For Claude Team/Enterprise: an owner connects SignRequest once for the whole organisation, and members use it with no sign-in screen.
+
+1. Turn it on once (the value is generated inline and never shown):
+   `openssl rand -base64 32 | tr -d '\n' | npx wrangler secret put SIGNREQUEST_EMA_SECRET -c wrangler.oauth.jsonc`
+2. In Claude: *Organization settings → Connectors → add the connector URL (`…/mcp`) → Managed authorization*. Copy the **Issuer URL**.
+3. Open `https://<worker>/managed`, paste the Issuer URL and a SignRequest **team API token** (Team settings → API) with its team subdomain, optionally limit the email domains, and Save. Copy the **Tenant ID** into Claude and click *Test connection*.
+
+Members act with that team token (documents they send come from the team). Changing or removing the setup needs the Tenant ID and the same token (`/managed?manage=1`). `signrequest_whoami` shows `credential_source: "managed"`.
+
 ## OAuth worker (Claude.ai web)
 
 `signrequest-mcp-oauth` is the same MCP server fronted by an OAuth 2.1 provider. It signs users in with SignRequest itself (`SR_CLIENT_ID`/`SR_CLIENT_SECRET`). The health check (`GET /`) reports the version and whether sign-in is configured. Routes:
@@ -394,7 +406,9 @@ Any HTTP MCP client works — send `Authorization: Bearer <MCP_AUTH_TOKEN>` and 
 | `GET /` | health check (no auth) |
 | `GET /health` | JSON `{ok, service, version, warnings}` (no auth) |
 | `GET /authorize` | hand-off to SignRequest login |
+| `GET/POST /authorize` | Connect page: SignRequest login (when configured) or API token |
 | `GET /callback` | SignRequest OAuth2 redirect target |
+| `GET/POST /managed` | Managed-authorization setup for a Claude organisation owner (503 until `SIGNREQUEST_EMA_SECRET` is set) |
 | `/token`, `/register`, `/.well-known/oauth-*` | OAuth endpoints (handled by the provider) |
 | `POST /mcp` | MCP Streamable HTTP, OAuth-protected (no SSE on this worker) |
 

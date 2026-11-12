@@ -68,6 +68,14 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
     registerTools(this.server, client, {
       defaultFromEmail: this.env.SIGNREQUEST_FROM_EMAIL,
       readOnly: this.env.MCP_READONLY === "true",
+      credential: () => {
+        const t = own() ?? this.env.SIGNREQUEST_TOKEN;
+        return {
+          source: own() ? "own_token" : "server_token",
+          token: t ? (t.length > 12 ? `${t.slice(0, 4)}…${t.slice(-4)}` : "••••") : null,
+          team: own() ? (this.props?.team ?? null) : null,
+        };
+      },
     });
   }
 
@@ -109,10 +117,18 @@ export default {
 
     // Public, unauthenticated health check (JSON, shared standard §8.2). Never echoes secret values.
     if (request.method === "GET" && url.pathname === "/health") {
+      // With bring-your-own-key on, callers' own tokens always work: the fallback pair is optional
+      // (a BYO-only deployment sets neither). Half a pair, or BYO off without the pair, is a misconfiguration.
+      const byo = env.MCP_BYO_KEYS !== "false";
       const warnings: string[] = [];
-      if (!env.MCP_AUTH_TOKEN) warnings.push("MCP_AUTH_TOKEN is not set: every MCP request is rejected.");
-      if (!env.SIGNREQUEST_TOKEN) warnings.push("SIGNREQUEST_TOKEN is not set: every tool call will fail.");
-      return Response.json({ ok: warnings.length === 0, service: "signrequest-mcp", version: VERSION, warnings });
+      if (!byo || env.SIGNREQUEST_TOKEN) {
+        if (!env.MCP_AUTH_TOKEN) warnings.push(`MCP_AUTH_TOKEN is not set: ${byo ? "the team token can't be used" : "every MCP request is rejected"}.`);
+      }
+      if (!byo || env.MCP_AUTH_TOKEN) {
+        if (!env.SIGNREQUEST_TOKEN) warnings.push(`SIGNREQUEST_TOKEN is not set: ${byo ? "only callers' own tokens work" : "every tool call will fail"}.`);
+      }
+      const ok = byo || (!!env.MCP_AUTH_TOKEN && !!env.SIGNREQUEST_TOKEN);
+      return Response.json({ ok, service: "signrequest-mcp", version: VERSION, warnings });
     }
     if (request.method === "GET" && url.pathname === "/") {
       const modes = [env.MCP_BYO_KEYS === "false" ? null : "header", env.SIGNREQUEST_TOKEN ? "fallback" : null].filter(Boolean).join(",");

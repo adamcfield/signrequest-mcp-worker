@@ -8,3 +8,4 @@ MCP_AUTH_TOKEN=a-long-random-string
 # OAuth worker (wrangler dev -c wrangler.oauth.jsonc)
 # SR_CLIENT_ID=
 # SR_CLIENT_SECRET=
+# SIGNREQUEST_EMA_SECRET=dev-seal   # turns on /managed (managed authorization)

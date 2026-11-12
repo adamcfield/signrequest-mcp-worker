@@ -5,21 +5,28 @@
  * OAuth 2.1 provider (@cloudflare/workers-oauth-provider) so it can be added to
  * Claude.ai as a custom connector (Claude.ai web requires OAuth, not a bearer).
  *
- * Sign-in is SignRequest's own OAuth2 login (SR_CLIENT_ID + SR_CLIENT_SECRET):
- * /authorize hands off to SignRequest, and each user acts with their own
- * SignRequest access token, refreshed upstream whenever Claude refreshes ours.
- * Without those secrets the worker fails closed (503 on /authorize).
+ * /authorize shows a connect page (src/connect.ts) with two ways in:
+ *  - "Sign in with SignRequest" (SR_CLIENT_ID + SR_CLIENT_SECRET set): hands off to
+ *    SignRequest's OAuth2 login; each user acts with their own SignRequest access token,
+ *    refreshed upstream whenever Claude refreshes ours.
+ *  - "Use an API token": the user's own SignRequest API token (+ optional team subdomain),
+ *    checked once, stored only in the encrypted grant.
+ * Managed authorization (claude.ai org connection, standard §3C): /managed binds one team API
+ * token to a Claude organisation; members connect with no sign-in screen. Off until
+ * SIGNREQUEST_EMA_SECRET is set.
  *
  * Routes:
  *   GET  /                         health check (no auth)
  *   GET  /health                   JSON health {ok, service, version, warnings} (no auth)
- *   GET  /authorize                hand-off to SignRequest's login (this file)
+ *   GET/POST /authorize            connect page: SignRequest login or API token (src/connect.ts)
  *   GET  /callback                 SignRequest OAuth2 redirect target (this file)
+ *   GET/POST /managed              managed-authorization setup for a Claude org owner (src/connect.ts)
  *   /token, /register, /.well-known/oauth-*   handled by OAuthProvider
  *   POST /mcp                      MCP Streamable HTTP (OAuth-protected; SSE is bearer-worker only)
  *
  * Secrets (wrangler secret put ... -c wrangler.oauth.jsonc):
- *   SR_CLIENT_ID, SR_CLIENT_SECRET   SignRequest OAuth2 application
+ *   SR_CLIENT_ID, SR_CLIENT_SECRET   optional SignRequest OAuth2 application ("Sign in with SignRequest")
+ *   SIGNREQUEST_EMA_SECRET           optional; turns on managed authorization (never rotate it)
  * Optional: SIGNREQUEST_TEAM (team subdomain for team context), SIGNREQUEST_FROM_EMAIL,
  *   SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
  */
@@ -31,6 +38,18 @@ import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SignRequestClient } from "./signrequest.js";
 import { registerTools, VERSION } from "./tools.js";
+import {
+  clientOptions,
+  credentialInfo,
+  handleAuthorize,
+  handleManaged,
+  healthBody,
+  loginMode,
+  managed,
+  page,
+  type ConnectEnv,
+  type GrantProps,
+} from "./connect.js";
 
 // Reuses the bearer worker's global Cloudflare.Env (MCP_OBJECT, SIGNREQUEST_FROM_EMAIL,
 // etc.) and adds the OAuth-specific bindings. SIGNREQUEST_TOKEN is not used here.
@@ -40,28 +59,18 @@ interface Env extends Cloudflare.Env {
   OAUTH_PROVIDER: OAuthHelpers;
   SR_CLIENT_ID?: string;
   SR_CLIENT_SECRET?: string;
-  /** Team subdomain: API calls go to https://<team>.signrequest.com/api/v1 for team context. */
+  /** Team subdomain for LOGIN tokens: API calls go to https://<team>.signrequest.com/api/v1. */
   SIGNREQUEST_TEAM?: string;
+  /** Seals org credentials for managed authorization; unset = /managed is off. */
+  SIGNREQUEST_EMA_SECRET?: string;
 }
 
-/** Grant props: the user's upstream SignRequest tokens. */
-type Props = {
-  user: string;
-  accessToken?: string;
-  refreshToken?: string;
-  /** Epoch ms when accessToken expires. */
-  expiresAt?: number;
-};
+/** Grant props: a SignRequest login (OAuth2 tokens) or an API token (own or the organisation's). */
+type Props = GrantProps;
 
 const SR_OAUTH = "https://signrequest.com/api/v1/oauth2";
 const STATE_TTL_SECONDS = 600;
 
-const loginMode = (env: Env): boolean => !!(env.SR_CLIENT_ID && env.SR_CLIENT_SECRET);
-
-function apiBaseUrl(env: Env): string | undefined {
-  if (env.SIGNREQUEST_BASE_URL) return env.SIGNREQUEST_BASE_URL;
-  return env.SIGNREQUEST_TEAM ? `https://${env.SIGNREQUEST_TEAM}.signrequest.com/api/v1` : undefined;
-}
 type AuthRequest = Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>>;
 
 /** The MCP agent — identical tool surface to the bearer worker. */
@@ -70,15 +79,8 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
 
   async init(): Promise<void> {
     const client = new SignRequestClient({
-      // Read per request so a token refreshed mid-session (see __unsafe_ensureInitialized)
-      // is used. Grants without an upstream token (pre-1.5.2 passphrase grants) can't act.
-      token: () => {
-        const t = this.props?.accessToken;
-        if (!t) throw new Error("This connection has no SignRequest login. Disconnect and reconnect the connector.");
-        return t;
-      },
-      authScheme: "Bearer",
-      baseUrl: apiBaseUrl(this.env),
+      // Read per request so a token refreshed mid-session (see __unsafe_ensureInitialized) is used.
+      ...clientOptions(() => this.props, this.env),
       maxRetries: this.env.SIGNREQUEST_MAX_RETRIES
         ? Number(this.env.SIGNREQUEST_MAX_RETRIES)
         : undefined,
@@ -86,6 +88,7 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
     registerTools(this.server, client, {
       defaultFromEmail: this.env.SIGNREQUEST_FROM_EMAIL,
       readOnly: this.env.MCP_READONLY === "true",
+      credential: () => credentialInfo(this.props, this.env),
     });
   }
 
@@ -95,24 +98,17 @@ export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
   // (tests/oauth.test.ts fails if it disappears).
   override async __unsafe_ensureInitialized(props?: Props): Promise<void> {
     await super.__unsafe_ensureInitialized(props);
-    if (props?.accessToken && props.accessToken !== this.props?.accessToken) {
+    if (
+      (props?.accessToken && props.accessToken !== this.props?.accessToken) ||
+      (props?.apiToken && (props.apiToken !== this.props?.apiToken || props.team !== this.props?.team))
+    ) {
       await this.updateProps(props);
     }
   }
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string,
-  );
-}
-
 function errorPage(message: string, status = 400): Response {
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SignRequest MCP</title><body style="font:16px system-ui;padding:32px;max-width:520px;margin:auto"><h1 style="font-size:18px">Couldn't connect to SignRequest</h1><p>${escapeHtml(message)}</p><p>Close this tab and try connecting again from Claude.</p></body>`,
-    { status, headers: { "content-type": "text/html; charset=utf-8" } },
-  );
+  return page("Couldn't connect to SignRequest", `${message} Close this tab and try connecting again from Claude.`, status);
 }
 
 type SrTokenResponse = {
@@ -162,7 +158,7 @@ function propsFromToken(t: SrTokenResponse, previous?: Props): Props {
 const ttlFor = (t: SrTokenResponse): number => Math.max(60, (t.expires_in ?? 36000) - 300);
 
 /** Login mode: stash Claude's auth request under a random state and hand off to SignRequest. */
-async function redirectToSignRequest(request: Request, env: Env, reqInfo: AuthRequest): Promise<Response> {
+async function redirectToSignRequest(request: Request, env: ConnectEnv, reqInfo: AuthRequest): Promise<Response> {
   const state = crypto.randomUUID();
   await env.OAUTH_KV.put(`sr_state:${state}`, JSON.stringify(reqInfo), { expirationTtl: STATE_TTL_SECONDS });
   const url = new URL(`${SR_OAUTH}/authorize/`);
@@ -214,36 +210,17 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
   return Response.redirect(redirectTo, 302);
 }
 
-async function handleAuthorize(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  // Fail closed: without a SignRequest OAuth2 app there is no way to sign in.
-  if (!loginMode(env)) return errorPage("This connector isn't configured for SignRequest login yet.", 503);
-  let reqInfo: AuthRequest;
-  try {
-    reqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
-  } catch {
-    return new Response("Invalid OAuth request", { status: 400 });
-  }
-  if (!reqInfo.clientId) return new Response("Invalid OAuth request", { status: 400 });
-  return redirectToSignRequest(request, env, reqInfo);
-}
-
-/** Non-API, non-token routes: the SignRequest hand-off, its callback and a public health check. */
+/** Non-API, non-token routes: the connect page, the SignRequest callback, /managed and a public health check. */
 const defaultHandler = {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/authorize") return handleAuthorize(request, env);
-    if (url.pathname === "/callback" && request.method === "GET") return handleCallback(request, env);
-    if (url.pathname === "/health" && request.method === "GET") {
-      const warnings: string[] = [];
-      if (!loginMode(env)) warnings.push("SR_CLIENT_ID / SR_CLIENT_SECRET are not set: sign-in is disabled.");
-      if (!env.SIGNREQUEST_TEAM && !env.SIGNREQUEST_BASE_URL) {
-        warnings.push("SIGNREQUEST_TEAM is not set: login tokens see no events and get 403 on the audit log.");
-      }
-      return Response.json({ ok: warnings.length === 0, service: "signrequest-mcp-oauth", version: VERSION, warnings });
-    }
-    if (url.pathname === "/" && request.method === "GET") {
-      const mode = loginMode(env) ? "SignRequest login" : "not configured";
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/authorize") return handleAuthorize(request, env, redirectToSignRequest);
+    if (path === "/managed") return handleManaged(request, env);
+    if (path === "/callback" && request.method === "GET") return handleCallback(request, env);
+    if (path === "/health" && request.method === "GET") return Response.json(healthBody(env, VERSION));
+    if (path === "/" && request.method === "GET") {
+      const mode = loginMode(env) ? "SignRequest login or API token" : "API token";
       return new Response(`signrequest-mcp-oauth worker: ok (v${VERSION}, sign-in: ${mode}, OAuth-gated MCP at /mcp)`, {
         status: 200,
         headers: { "content-type": "text/plain" },
@@ -258,14 +235,14 @@ const defaultHandler = {
  * grants were issued for (claude.ai connects to /mcp), or every session signs out.
  * Forks: change it to your own worker URL.
  */
-export const MCP_RESOURCE = "https://signrequest-mcp-oauth.adamcfield.workers.dev/mcp";
+const MCP_RESOURCE = "https://signrequest-mcp-oauth.adamcfield.workers.dev/mcp";
 
 /**
  * The resource this deployment serves. A parallel copy on another hostname (the Volta account
  * copy, deploy/volta.jsonc) sets the `MCP_RESOURCE` var to its own /mcp URL; unset, it is the
  * canonical URL above, so the existing deployment and its grants are unchanged.
  */
-export function resourceFor(env: { MCP_RESOURCE?: string }): string {
+function resourceFor(env: { MCP_RESOURCE?: string }): string {
   const v = env.MCP_RESOURCE?.trim();
   return v ? v : MCP_RESOURCE;
 }
@@ -281,6 +258,9 @@ export default new OAuthProvider({
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
+  // §3C: Claude registers by Client ID Metadata Document (needs global_fetch_strictly_public).
+  clientIdMetadataDocumentEnabled: true,
+  enterpriseManagedAuthorization: managed.emaOptions(workerEnv),
   // Login mode: match our token lifetime to SignRequest's, and refresh SignRequest's
   // token each time Claude refreshes ours.
   tokenExchangeCallback: async ({ grantType, props }) => {

@@ -5,9 +5,12 @@ Guide for AI coding agents working in this repo.
 ## What this is
 A remote MCP server on Cloudflare Workers covering the whole SignRequest REST API v1 (47 tools), deployed as **two workers from shared code**:
 - **`signrequest-mcp`** (`src/index.ts`, `wrangler.jsonc`): bring-your-own-key first: a caller's own token (`X-SignRequest-Token` / `Authorization: Token`, `src/byo.ts`) goes into the session props and is used as-is, no bearer needed. Otherwise bearer-gated (`MCP_AUTH_TOKEN`, constant-time, fails closed) and acts with the fallback team token `SIGNREQUEST_TOKEN`. `__unsafe_ensureInitialized` replaces the session's props whenever the credential changes. Serves `/mcp` (Streamable HTTP) and `/sse` (legacy).
-- **`signrequest-mcp-oauth`** (`src/oauth.ts`, `wrangler.oauth.jsonc`): the claude.ai connector. `@cloudflare/workers-oauth-provider` with **SignRequest's own OAuth2 login** as the upstream (`SR_CLIENT_ID`/`SR_CLIENT_SECRET`); each user acts with their own token (`Bearer`). `/mcp` only.
+- **`signrequest-mcp-oauth`** (`src/oauth.ts`, `wrangler.oauth.jsonc`): the claude.ai connector. `@cloudflare/workers-oauth-provider`. The connect page (`src/connect.ts`, Node-testable) offers **SignRequest's own OAuth2 login** (only with `SR_CLIENT_ID`/`SR_CLIENT_SECRET`; props `accessToken`, sent as `Bearer`) and **the user's own API token** (props `apiToken` + `team`, sent as `Token` on `https://<team>.signrequest.com`). `/mcp` only.
 
 Both bind the Durable Object `MCP_OBJECT` → class `SignRequestMCP` (migration `v1`, `new_sqlite_classes`); keep the migrations in both configs in sync.
+
+## Managed authorization (standard §3C)
+- `src/managed-auth.ts` and `src/ui.ts` are fleet copies: never edit them here alone (only `BRAND` in ui.ts is ours). `/managed` (`src/connect.ts`) binds one team API token to a Claude organisation; grants carry `{apiToken, team, m: true}` → `credential_source: "managed"`. On only when `SIGNREQUEST_EMA_SECRET` is set; never rotate it. `tests/connect.test.ts` rebuilds the provider from `src/connect.ts` and runs the whole flow (connect page, managed setup, ID-JAG token, whoami).
 
 ## Layout
 - `src/signrequest.ts` — dependency-free `SignRequestClient` (`fetch` only): retries **GETs only** (429/5xx/network, `Retry-After`-aware backoff), never retries writes (double-send risk); `paginate()` for count/next/results; `mapLimit` bounded concurrency; logs method+path of every write (no PII).
