@@ -7,7 +7,7 @@
 export type Props = { token?: string; team?: string };
 
 /** A SignRequest team subdomain (`acme` in acme.signrequest.com). Anything else is ignored. */
-const TEAM_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+export const TEAM_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /** The caller's own SignRequest credential, if they sent one. Never logged. */
 export function byoCredential(request: Request, env: { MCP_BYO_KEYS?: string }): Props | null {

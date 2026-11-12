@@ -223,7 +223,7 @@ function validateDocSource(a: {
 }
 
 /** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
-export const VERSION = "1.8.1";
+export const VERSION = "1.9.0";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
@@ -256,6 +256,8 @@ export interface RegisterToolsOptions {
   defaultFromEmail?: string;
   /** When true, write/state-changing tools are not registered at all (reporting-only deploys). */
   readOnly?: boolean;
+  /** Which credential this session uses, for signrequest_whoami. Never the whole token. */
+  credential?: () => { source: string; token: string | null; team?: string | null };
 }
 
 /** Register all SignRequest tools onto the given MCP server. */
@@ -1141,7 +1143,7 @@ export function registerTools(
     "signrequest_whoami",
     {
       description:
-        "Health check / identity: verifies the configured SignRequest API token works and returns the team(s) and member(s) it can access, plus the default sender. Call this first if other tools return 401/403 — it confirms the token is valid before you debug anything else.",
+        "Health check / identity: verifies the configured SignRequest API token works and returns the team(s) and member(s) it can access, plus the default sender. Call this first if other tools return 401/403 — it confirms the token is valid before you debug anything else. credential_source says which credential this connection uses: managed = the organisation's token (set by an admin), api_token = the user's own pasted token, signrequest_login = the user's SignRequest sign-in, own_token / server_token on the bearer worker.",
       inputSchema: {},
       annotations: { title: "Who am I (token health)", ...READ_ONLY },
     },
@@ -1151,7 +1153,14 @@ export function registerTools(
           client.listTeams() as Promise<AnyRec>,
           client.listTeamMembers() as Promise<AnyRec>,
         ]);
-        return { ok: true, default_from_email: opts.defaultFromEmail ?? null, teams, members };
+        const cred = opts.credential?.();
+        return {
+          ok: true,
+          ...(cred ? { credential_source: cred.source, token: cred.token, team_subdomain: cred.team ?? null } : {}),
+          default_from_email: opts.defaultFromEmail ?? null,
+          teams,
+          members,
+        };
       }),
   );
 

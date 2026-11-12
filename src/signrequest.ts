@@ -159,7 +159,7 @@ export interface AuditEventQuery {
 
 export class SignRequestClient {
   private token: string | (() => string);
-  private authScheme: "Token" | "Bearer";
+  private authScheme: "Token" | "Bearer" | (() => "Token" | "Bearer");
   private baseUrl: string | (() => string | undefined);
   private maxRetries: number;
   private timeoutMs: number;
@@ -169,7 +169,7 @@ export class SignRequestClient {
     /** API token, or a getter so a refreshed OAuth token is picked up on every request. */
     token: string | (() => string);
     /** "Token" for team API tokens (default), "Bearer" for SignRequest OAuth2 access tokens. */
-    authScheme?: "Token" | "Bearer";
+    authScheme?: "Token" | "Bearer" | (() => "Token" | "Bearer");
     /** API base, or a getter resolved per request (bring-your-own-key sessions). */
     baseUrl?: string | (() => string | undefined);
     /** Max retry attempts for transient failures on idempotent (GET) calls. Default 3. */
@@ -207,7 +207,7 @@ export class SignRequestClient {
     body?: unknown,
   ): Promise<T> {
     const headers: Record<string, string> = {
-      Authorization: `${this.authScheme} ${typeof this.token === "function" ? this.token() : this.token}`,
+      Authorization: `${typeof this.authScheme === "function" ? this.authScheme() : this.authScheme} ${typeof this.token === "function" ? this.token() : this.token}`,
       Accept: "application/json",
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";

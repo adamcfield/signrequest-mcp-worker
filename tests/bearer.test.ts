@@ -37,10 +37,16 @@ describe("bearer worker", () => {
   it("serves /health without auth and never echoes secrets", async () => {
     const ok = await (await call("/health", env)).json();
     expect(ok).toEqual({ ok: true, service: "signrequest-mcp", version: VERSION, warnings: [] });
-    const bad = await call("/health", {});
+    const bad = await call("/health", { MCP_BYO_KEYS: "false" });
     const text = await bad.text();
     expect(JSON.parse(text).ok).toBe(false);
     expect(JSON.parse(text).warnings).toHaveLength(2);
     expect(text).not.toContain("secret-token");
+    // Bring-your-own-key only (no fallback pair): healthy, nothing to warn about.
+    expect(await (await call("/health", {})).json()).toMatchObject({ ok: true, warnings: [] });
+    // Half a pair is a misconfiguration, but callers' own tokens still work.
+    const half: any = await (await call("/health", { MCP_AUTH_TOKEN: "secret-token" })).json();
+    expect(half.ok).toBe(true);
+    expect(half.warnings).toEqual(["SIGNREQUEST_TOKEN is not set: only callers' own tokens work."]);
   });
 });
