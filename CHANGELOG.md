@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1 — 2026-11-12 — Volta account copy
+
+### Added
+- `deploy/volta.jsonc` + `scripts/deploy-volta.mjs` + `Deploy (Volta copy)` workflow: every push to main also deploys a parallel copy of both workers to the Volta Cloudflare account (`*.volta-solar.workers.dev`). The personal deployments are untouched.
+- The OAuth worker reads its resource URL from the `MCP_RESOURCE` var when set (the Volta copy sets its own `/mcp` URL); unset, it stays the canonical personal URL, so existing grants are unchanged.
+
 ## 1.8.0 — 2026-11-02 — Bring-your-own-key on the bearer worker
 
 ### Added

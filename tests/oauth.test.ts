@@ -18,6 +18,12 @@ describe("oauth worker library contracts", () => {
     expect(src).not.toMatch(/userId: `signrequest:/);
   });
 
+  it("a copy on another hostname can override the resource; unset keeps the canonical one", () => {
+    const src = readFileSync(new URL("../src/oauth.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/resourceMetadata: \{ resource: resourceFor\(workerEnv/);
+    expect(src).toMatch(/return v \? v : MCP_RESOURCE;/);
+  });
+
   it("has no passphrase or shared-token sign-in path (retired in 1.5.2)", () => {
     const src = readFileSync(new URL("../src/oauth.ts", import.meta.url), "utf8");
     expect(src).not.toMatch(/APP_PASSPHRASE|env\.SIGNREQUEST_TOKEN|consentPage/);
