@@ -12,8 +12,9 @@
  *  - "Use an API token": the user's own SignRequest API token (+ optional team subdomain),
  *    checked once, stored only in the encrypted grant.
  * Managed authorization (claude.ai org connection, standard §3C): /managed binds one team API
- * token to a Claude organisation; members connect with no sign-in screen. Off until
- * SIGNREQUEST_EMA_SECRET is set.
+ * token to a Claude organisation; members connect with no sign-in screen. Always on: the
+ * worker generates its own seal key in the EMA_KEYS Durable Object (SIGNREQUEST_EMA_SECRET
+ * wins when set).
  *
  * Routes:
  *   GET  /                         health check (no auth)
@@ -26,7 +27,7 @@
  *
  * Secrets (wrangler secret put ... -c wrangler.oauth.jsonc):
  *   SR_CLIENT_ID, SR_CLIENT_SECRET   optional SignRequest OAuth2 application ("Sign in with SignRequest")
- *   SIGNREQUEST_EMA_SECRET           optional; turns on managed authorization (never rotate it)
+ *   SIGNREQUEST_EMA_SECRET           optional seal key for managed authorization (never rotate it)
  * Optional: SIGNREQUEST_TEAM (team subdomain for team context), SIGNREQUEST_FROM_EMAIL,
  *   SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
  */
@@ -50,6 +51,7 @@ import {
   type ConnectEnv,
   type GrantProps,
 } from "./connect.js";
+export { EmaKeyStore } from "./managed-auth.js";
 
 // Reuses the bearer worker's global Cloudflare.Env (MCP_OBJECT, SIGNREQUEST_FROM_EMAIL,
 // etc.) and adds the OAuth-specific bindings. SIGNREQUEST_TOKEN is not used here.
@@ -61,8 +63,9 @@ interface Env extends Cloudflare.Env {
   SR_CLIENT_SECRET?: string;
   /** Team subdomain for LOGIN tokens: API calls go to https://<team>.signrequest.com/api/v1. */
   SIGNREQUEST_TEAM?: string;
-  /** Seals org credentials for managed authorization; unset = /managed is off. */
+  /** Optional seal key for managed authorization; unset = the generated key in EMA_KEYS. */
   SIGNREQUEST_EMA_SECRET?: string;
+  EMA_KEYS?: DurableObjectNamespace;
 }
 
 /** Grant props: a SignRequest login (OAuth2 tokens) or an API token (own or the organisation's). */

@@ -10,8 +10,9 @@
  *    only inside the encrypted grant.
  *  - Managed authorization (standard §3C): a Claude Team/Enterprise owner binds one team API
  *    token on /managed and gets a Tenant ID for Claude; members connect with no sign-in screen.
- *    Shared module src/managed-auth.ts (fleet copy, never edit it here); off until
- *    SIGNREQUEST_EMA_SECRET is set.
+ *    Shared module src/managed-auth.ts (fleet copy, never edit it here); on whenever the
+ *    EMA_KEYS Durable Object is bound (the worker generates its own seal key;
+ *    SIGNREQUEST_EMA_SECRET wins when set).
  */
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { createManagedAuth, normalizeIssuer, parseDomains } from "./managed-auth.js";
@@ -41,6 +42,7 @@ export type SrCred = { token: string; team?: string };
 export const managed = createManagedAuth<SrCred>({
   kvPrefix: "signrequest:",
   sealSecretName: "SIGNREQUEST_EMA_SECRET",
+  generatedKeyBinding: "EMA_KEYS",
   toProps: (c) => ({ user: "managed", apiToken: c.token, ...(c.team ? { team: c.team } : {}), m: true }) satisfies GrantProps,
   credentialId: (c) => `${c.token}|${c.team ?? ""}`,
 });
@@ -53,6 +55,8 @@ export interface ConnectEnv {
   SIGNREQUEST_TEAM?: string;
   SIGNREQUEST_BASE_URL?: string;
   SIGNREQUEST_EMA_SECRET?: string;
+  /** Keeps the worker's own generated seal key (EmaKeyStore). Never delete or rename it. */
+  EMA_KEYS?: DurableObjectNamespace;
 }
 
 export const loginMode = (env: { SR_CLIENT_ID?: string; SR_CLIENT_SECRET?: string }): boolean =>

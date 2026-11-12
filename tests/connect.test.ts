@@ -14,6 +14,7 @@ import {
   parseCred,
   type GrantProps,
 } from "../src/connect.js";
+import { EmaKeyStore } from "../src/managed-auth.js";
 
 /**
  * src/oauth.ts imports cloudflare:workers and can't load under Node. This builds the same
@@ -50,6 +51,25 @@ function fakeServer() {
 
 type Env = Record<string, any>;
 const ctx = { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext;
+
+/** In-memory EMA_KEYS namespace running the real EmaKeyStore (like workerd: requests wait for blockConcurrencyWhile). */
+function keyStoreNs(storage = new Map<string, unknown>()) {
+  const objs = new Map<string, EmaKeyStore>();
+  let ready: Promise<unknown> = Promise.resolve();
+  const state = {
+    storage: { get: async (k: string) => storage.get(k) as any, put: async (k: string, v: unknown) => void storage.set(k, v) },
+    blockConcurrencyWhile: <T,>(fn: () => Promise<T>) => (ready = fn()) as Promise<T>,
+  };
+  const ns = {
+    idFromName: (n: string) => n,
+    get: (id: string) => {
+      if (!objs.has(id)) objs.set(id, new EmaKeyStore(state));
+      const o = objs.get(id)!;
+      return { fetch: async () => (await ready, o.fetch()) };
+    },
+  };
+  return { ns: ns as unknown as DurableObjectNamespace, storage };
+}
 
 function worker(env: Env) {
   const provider = new OAuthProvider({
@@ -285,6 +305,34 @@ describe("claude.ai managed authorization", () => {
     expect(await rm.text()).toContain("Setup removed");
     expect((await tokenFor(await f.sign({ client_id: clientId, email: "a@example.com", aud_tenant: tenant }))).status).toBe(400);
   });
+  it("needs no secret: the worker generates and keeps its own seal key", async () => {
+    const kv = memKV();
+    const ks = keyStoreNs();
+    const env: Env = { OAUTH_KV: kv, EMA_KEYS: ks.ns, SIGNREQUEST_TEAM: "loginteam" };
+    const w = worker(env);
+    const f = await fakes({ "org-token-abc123": "acme.signrequest.com" });
+    const h: any = await (await w(new Request("https://w/health"))).json();
+    expect(h.signIn.managed).toBe(true);
+    expect(h.warnings.join(" ")).not.toContain("SIGNREQUEST_EMA_SECRET");
+    expect((await w(new Request("https://w/managed"))).status).toBe(200);
+
+    const html = await (await post(w, "/managed", { action: "save", issuer: ISS, token: "org-token-abc123", team: "acme" })).text();
+    const tenant = /value="(tn_[\w-]+)"/.exec(html)![1];
+    const key = ks.storage.get("ema-seal-key") as string;
+    expect(key.length).toBeGreaterThanOrEqual(43);
+    for (const v of kv._map.values()) {
+      expect(v).not.toContain("org-token-abc123");
+      expect(v).not.toContain(key);
+    }
+
+    // After a restart (fresh isolate, same Durable Object storage) members still get in.
+    const w2 = worker({ ...env, EMA_KEYS: keyStoreNs(ks.storage).ns });
+    const clientId = await register(w2);
+    const res = await post(w2, "/token", { grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: await f.sign({ client_id: clientId, email: "a@example.com", aud_tenant: tenant }), client_id: clientId, resource: RESOURCE });
+    expect(res.status).toBe(200);
+    expect(await whoami(w2, ((await res.json()) as any).access_token)).toMatchObject({ ok: true, credential_source: "managed", team_subdomain: "acme" });
+    expect(ks.storage.get("ema-seal-key")).toBe(key);
+  });
 });
 
 describe("oauth.ts wiring", () => {
@@ -297,5 +345,9 @@ describe("oauth.ts wiring", () => {
     expect(src).toMatch(/\.\.\.clientOptions\(\(\) => this\.props, this\.env\)/);
     const wr = readFileSync(new URL("../wrangler.oauth.jsonc", import.meta.url), "utf8");
     expect(wr).toContain("global_fetch_strictly_public");
+    // The generated seal key: exported, bound, migrated. Never delete or rename any of it.
+    expect(src).toMatch(/export \{ EmaKeyStore \} from "\.\/managed-auth\.js"/);
+    expect(wr).toMatch(/"name": "EMA_KEYS", "class_name": "EmaKeyStore"/);
+    expect(wr).toMatch(/"new_sqlite_classes": \["EmaKeyStore"\]/);
   });
 });
