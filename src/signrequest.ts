@@ -160,7 +160,7 @@ export interface AuditEventQuery {
 export class SignRequestClient {
   private token: string | (() => string);
   private authScheme: "Token" | "Bearer";
-  private baseUrl: string;
+  private baseUrl: string | (() => string | undefined);
   private maxRetries: number;
   private timeoutMs: number;
   private backoffBaseMs: number;
@@ -170,7 +170,8 @@ export class SignRequestClient {
     token: string | (() => string);
     /** "Token" for team API tokens (default), "Bearer" for SignRequest OAuth2 access tokens. */
     authScheme?: "Token" | "Bearer";
-    baseUrl?: string;
+    /** API base, or a getter resolved per request (bring-your-own-key sessions). */
+    baseUrl?: string | (() => string | undefined);
     /** Max retry attempts for transient failures on idempotent (GET) calls. Default 3. */
     maxRetries?: number;
     /** Per-request timeout in ms. Default 30000. */
@@ -181,7 +182,7 @@ export class SignRequestClient {
     if (!opts.token) throw new Error("SignRequestClient requires an API token");
     this.token = opts.token;
     this.authScheme = opts.authScheme ?? "Token";
-    this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
     this.maxRetries = opts.maxRetries ?? 3;
     this.timeoutMs = opts.timeoutMs ?? 30000;
     this.backoffBaseMs = opts.backoffBaseMs ?? 1000;
@@ -211,7 +212,8 @@ export class SignRequestClient {
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
 
-    const url = `${this.baseUrl}${path}`;
+    const base = (typeof this.baseUrl === "function" ? this.baseUrl() : this.baseUrl) ?? DEFAULT_BASE_URL;
+    const url = `${base.replace(/\/+$/, "")}${path}`;
     if (method !== "GET") {
       // Non-PII audit trail for state-changing calls (surfaced via `wrangler tail`).
       try {

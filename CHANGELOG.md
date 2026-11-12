@@ -1,10 +1,31 @@
 # Changelog
 
-## 1.6.1 — 2026-11-02 — Volta account copy
+## 1.8.1 — 2026-11-12 — Volta account copy
 
 ### Added
-- `deploy/volta.jsonc` + `scripts/deploy-volta.mjs` + `Deploy (Volta copy)` workflow: deploys a parallel copy of both workers to the Volta Cloudflare account (its workers.dev subdomain, its own `OAUTH_KV`). The workflow skips until the `VOLTA_CLOUDFLARE_*` repo secrets are set and the overlay's KV id is filled in. The personal deployment is unchanged.
-- OAuth worker: optional `MCP_RESOURCE` var overrides the token audience, so the copy can serve its own `/mcp` URL. Unset, the resource is the existing canonical URL and current grants are untouched.
+- `deploy/volta.jsonc` + `scripts/deploy-volta.mjs` + `Deploy (Volta copy)` workflow: every push to main also deploys a parallel copy of both workers to the Volta Cloudflare account (`*.volta-solar.workers.dev`). The personal deployments are untouched.
+- The OAuth worker reads its resource URL from the `MCP_RESOURCE` var when set (the Volta copy sets its own `/mcp` URL); unset, it stays the canonical personal URL, so existing grants are unchanged.
+
+## 1.8.0 — 2026-11-02 — Bring-your-own-key on the bearer worker
+
+### Added
+- Bearer worker: a caller can send their **own** SignRequest API token (`X-SignRequest-Token`, or `Authorization: Token <token>`; optional `X-SignRequest-Team: <subdomain>`) and act with it, with no `MCP_AUTH_TOKEN`. Shared MCP worker standard §3A: one deployment, many SignRequest accounts. `MCP_BYO_KEYS="false"` turns it off.
+- The token rides in the session's props and is re-read on every request; a session's props are replaced whenever the presented credential changes, so a session id never lends one caller's token to another.
+
+### Changed
+- `SIGNREQUEST_TOKEN` and `MCP_AUTH_TOKEN` are now an optional fallback pair. Existing clients (`Authorization: Bearer <MCP_AUTH_TOKEN>`) work unchanged. With no team token configured, a caller without their own token gets a clear 401.
+- A caller's own token never uses `SIGNREQUEST_BASE_URL`: the API base is their team subdomain (validated) or the public host.
+- `GET /` reports the credential modes (`header`, `fallback`).
+
+## 1.7.0 — 2026-11-02 — Aligned with the shared MCP worker standard
+
+### Changed
+- **Tool renames** so every read tool starts with a read verb: `signrequest_webhook_health` → `signrequest_get_webhook_health`, `signrequest_campaign_status` → `signrequest_get_campaign_status`, `signrequest_wait_until_signed` → `signrequest_get_final_status`. Old names stay callable (hidden from `tools/list`) until 2.0.
+- Every read tool now sets `destructiveHint: false`; `tests/contract.test.ts` asserts all four annotations and `readOnlyHint` ⇔ read verb for every tool, over a real MCP client/server pair.
+- `GET /health` (JSON `{ok, service, version, warnings}`) on both workers.
+- `agents` pinned to exactly 0.30.1; `compatibility_date` 2025-05-01 → 2026-10-01.
+- CI: every push and PR, Node 22, `wrangler deploy --dry-run` for both configs, concurrency + docs `paths-ignore`.
+- Tests: bearer gate (401 + `WWW-Authenticate`, fail-closed, `/health`), version mirror (VERSION = package.json = CHANGELOG). Added `.dev.vars.example`.
 
 ## 1.6.0 — 2026-11-02 — Webhook failure attribution, compact documents, passphrase code removed
 

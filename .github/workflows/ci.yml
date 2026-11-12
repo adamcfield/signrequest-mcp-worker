@@ -2,18 +2,27 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "LICENSE"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    # A PR from a branch in this repo already runs on push; skip the duplicate.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npx wrangler deploy --dry-run --outdir dist/bearer
+      - run: npx wrangler deploy --dry-run -c wrangler.oauth.jsonc --outdir dist/oauth
