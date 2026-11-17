@@ -12,6 +12,7 @@ import {
   healthBody,
   managed,
   parseCred,
+  SCOPES,
   type GrantProps,
 } from "../src/connect.js";
 import { EmaKeyStore } from "../src/managed-auth.js";
@@ -97,6 +98,7 @@ function worker(env: Env) {
     authorizeEndpoint: "/authorize",
     tokenEndpoint: "/token",
     clientRegistrationEndpoint: "/register",
+    scopesSupported: SCOPES,
     clientIdMetadataDocumentEnabled: true,
     enterpriseManagedAuthorization: managed.emaOptions(env),
   });
@@ -255,6 +257,8 @@ describe("claude.ai managed authorization", () => {
     const meta: any = await (await w(new Request("https://w/.well-known/oauth-authorization-server"))).json();
     expect(meta.grant_types_supported).toContain("urn:ietf:params:oauth:grant-type:jwt-bearer");
     expect(meta.client_id_metadata_document_supported).toBe(true);
+    // claude.ai warns ("blocks managed authorization for some users") without scopes_supported.
+    expect(meta.scopes_supported).toEqual(["mcp"]);
     const h: any = await (await w(new Request("https://w/health"))).json();
     expect(h.signIn.managed).toBe(true);
     expect(h.warnings.join(" ")).not.toContain("SIGNREQUEST_EMA_SECRET");
@@ -292,6 +296,13 @@ describe("claude.ai managed authorization", () => {
     const tok: any = await res.json();
     expect(tok.refresh_token).toBeUndefined();
     expect(tok.expires_in).toBe(3600);
+    expect(tok.scope).toBe("mcp");
+    // What Claude sends after reading scopes_supported: the advertised scope comes back as is;
+    // an unknown one is narrowed to what this server grants.
+    const asked = async (scope: string) =>
+      (await (await post(w, "/token", { grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: await f.sign({ client_id: clientId, email: "member@example.com", aud_tenant: tenant }), client_id: clientId, resource: RESOURCE, scope })).json() as any).scope;
+    expect(await asked("mcp")).toBe("mcp");
+    expect(await asked("read write")).toBe("mcp");
     f.seen.length = 0;
     const who = await whoami(w, tok.access_token);
     expect(who).toMatchObject({ ok: true, credential_source: "managed", token: "org-…c123", team_subdomain: "acme" });
