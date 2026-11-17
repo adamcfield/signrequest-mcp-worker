@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.1 — 2026-11-17 — Advertise OAuth scopes for managed authorization
+
+### Fixed
+- The OAuth worker's `/.well-known/oauth-authorization-server` now lists `scopes_supported: ["mcp"]`. claude.ai's managed-authorization test passed but warned that a server advertising no scopes "blocks managed authorization for some users".
+- The list comes from one constant (`SCOPES`, `src/connect.ts`) that the managed (jwt-bearer) grant also issues, so what is advertised is exactly what is granted. A token request asking for another scope is narrowed to `mcp`.
+- Advertise only: no handler checks the scope, so existing personal and managed grants keep working.
+
 ## 1.10.0 — 2026-11-12 — Organisation connection with no secret to set
 
 ### Changed

@@ -39,7 +39,16 @@ export type GrantProps = {
 /** A SignRequest credential: an API token and, optionally, its team subdomain. */
 export type SrCred = { token: string; team?: string };
 
+/**
+ * The OAuth scopes this connector issues. Advertised as `scopes_supported` in the authorization
+ * server metadata (claude.ai warns, and may skip managed authorization, when it is missing) and
+ * granted on the jwt-bearer (managed) grant, so the two never drift apart. Only advertised:
+ * no handler checks it, so grants made before it existed keep working.
+ */
+export const SCOPES = ["mcp"];
+
 export const managed = createManagedAuth<SrCred>({
+  scopes: SCOPES,
   kvPrefix: "signrequest:",
   sealSecretName: "SIGNREQUEST_EMA_SECRET",
   generatedKeyBinding: "EMA_KEYS",

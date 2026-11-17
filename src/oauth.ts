@@ -48,6 +48,7 @@ import {
   loginMode,
   managed,
   page,
+  SCOPES,
   type ConnectEnv,
   type GrantProps,
 } from "./connect.js";
@@ -261,6 +262,8 @@ export default new OAuthProvider({
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
+  // claude.ai reads scopes_supported before managed authorization; same list the managed grant issues.
+  scopesSupported: SCOPES,
   // §3C: Claude registers by Client ID Metadata Document (needs global_fetch_strictly_public).
   clientIdMetadataDocumentEnabled: true,
   enterpriseManagedAuthorization: managed.emaOptions(workerEnv),

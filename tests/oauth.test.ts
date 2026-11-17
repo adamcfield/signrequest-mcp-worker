@@ -24,6 +24,13 @@ describe("oauth worker library contracts", () => {
     expect(src).toMatch(/return v \? v : MCP_RESOURCE;/);
   });
 
+  it("advertises scopes_supported from the same list the managed grant issues", () => {
+    const src = readFileSync(new URL("../src/oauth.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/scopesSupported: SCOPES,/);
+    const connect = readFileSync(new URL("../src/connect.ts", import.meta.url), "utf8");
+    expect(connect).toMatch(/createManagedAuth<SrCred>\(\{\n  scopes: SCOPES,/);
+  });
+
   it("has no passphrase or shared-token sign-in path (retired in 1.5.2)", () => {
     const src = readFileSync(new URL("../src/oauth.ts", import.meta.url), "utf8");
     expect(src).not.toMatch(/APP_PASSPHRASE|env\.SIGNREQUEST_TOKEN|consentPage/);
