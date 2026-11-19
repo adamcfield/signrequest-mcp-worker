@@ -99,6 +99,8 @@ export interface SendParams {
   who?: "m" | "o" | "mo";
   /** Suppress SignRequest status emails (event emails also need a callback_url). */
   disable_emails?: boolean;
+  /** Hold the request in the prepare step so fields can be placed by hand (response carries prepare_url). */
+  is_being_prepared?: boolean;
 }
 
 export interface QuickCreateParams extends DocumentParams {
@@ -111,6 +113,8 @@ export interface QuickCreateParams extends DocumentParams {
   who?: "m" | "o" | "mo";
   /** Suppress SignRequest status emails. Combine with per-signer embed_url_user_id for a silent request. */
   disable_emails?: boolean;
+  /** Hold the request in the prepare step so fields can be placed by hand (response carries prepare_url). */
+  is_being_prepared?: boolean;
 }
 
 export interface ListQuery {
