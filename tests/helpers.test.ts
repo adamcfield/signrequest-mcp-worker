@@ -142,3 +142,16 @@ describe("edge cases", () => {
     expect(readableStatus("")).toBe("unknown");
   });
 });
+
+import { documentUuidOf } from "../src/tools.js";
+describe("documentUuidOf", () => {
+  it("takes the document uuid from the document URL, not the request uuid", () => {
+    expect(
+      documentUuidOf({
+        uuid: "fe510fa1-f7ee-42ff-961a-e30290231f4b",
+        document: "https://t.signrequest.com/api/v1/documents/6ec0e51f-1571-4237-970b-6317978ca8df/",
+      }),
+    ).toBe("6ec0e51f-1571-4237-970b-6317978ca8df");
+    expect(documentUuidOf({ uuid: "x" })).toBeNull();
+  });
+});

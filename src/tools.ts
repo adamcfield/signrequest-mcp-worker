@@ -208,6 +208,18 @@ const docSourceShape = {
   template: z.string().url().optional().describe("Template resource URL to base the document on."),
 };
 
+/** quick_create/send responses are SignRequest objects: `uuid` is the request's, the document is only a URL in `document`. */
+export function documentUuidOf(resp: AnyRec): string | null {
+  const doc = resp.document;
+  if (typeof doc === "string") {
+    const m = doc.match(/\/documents\/([0-9a-f-]{36})\/?$/i);
+    if (m) return m[1];
+  }
+  const nested = resp.document as AnyRec | undefined;
+  if (nested && typeof nested === "object" && typeof nested.uuid === "string") return nested.uuid;
+  return null;
+}
+
 function validateDocSource(a: {
   file_from_url?: string;
   file_from_content?: string;
@@ -1363,7 +1375,7 @@ export function registerTools(
           .map((s) => ({ email: s.email, embed_url: s.embed_url }));
         return ok({
           emails_sent: false,
-          document_uuid: resp.uuid ?? sr.document_uuid ?? null,
+          document_uuid: documentUuidOf(resp) ?? sr.document_uuid ?? null,
           signrequest_uuid: sr.uuid ?? null,
           links,
         });
@@ -1539,7 +1551,7 @@ export function registerTools(
             const s0 = ((sr.signers as AnyRec[]) ?? []).find(
               (s) => String(s.email ?? "").toLowerCase() === r.email.toLowerCase(),
             );
-            return { email: r.email, ok: true, document_uuid: resp.uuid ?? null, signrequest_uuid: sr.uuid ?? null, embed_url: s0?.embed_url ?? null };
+            return { email: r.email, ok: true, document_uuid: documentUuidOf(resp), signrequest_uuid: sr.uuid ?? null, embed_url: s0?.embed_url ?? null };
           } catch (e) {
             return { email: r.email, ok: false, error: e instanceof SignRequestError ? `API ${e.status}: ${e.body.slice(0, 120)}` : String(e) };
           }

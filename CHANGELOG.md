@@ -6,6 +6,9 @@
 - `is_being_prepared` on `signrequest_quick_create` and `signrequest_send`: hold the request in SignRequest's prepare step; the response carries `prepare_url` for placing fields by hand when text tags are not detected.
 - `signrequest_quick_create` description now documents text tags: 0-based signer index (sender not counted with `who="o"`), silent ignore on tag/signer mismatch, compact tags without inner spaces (RTL PDFs), field width follows font size, and how to check detection before a real send.
 
+### Fixed
+- `signrequest_create_embedded_signing_links` and `signrequest_bulk_send` reported the signature request's uuid as `document_uuid`; it now comes from the response's `document` URL.
+
 ### Verified, no change
 - `file_from_url` vs `file_from_content`: a controlled A/B with the same tagged PDF stored byte-identical originals and both showed their fields in the signing UI. The worker forwards the URL untouched.
 - `cancel` returned `cancelled:true` in every test; the worker passes the SignRequest body through unchanged.
