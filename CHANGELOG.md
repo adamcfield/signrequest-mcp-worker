@@ -6,6 +6,9 @@
 - `is_being_prepared` on `signrequest_quick_create` and `signrequest_send`: hold the request in SignRequest's prepare step; the response carries `prepare_url` for placing fields by hand when text tags are not detected.
 - `signrequest_quick_create` description now documents text tags: 0-based signer index (sender not counted with `who="o"`), silent ignore on tag/signer mismatch, compact tags without inner spaces (RTL PDFs), field width follows font size, and how to check detection before a real send.
 
+### Verified root cause of "tags not detected" (no worker change)
+- A real contract PDF got no fields on pages 1-4 while pages 5-7 worked. Cause: three font ToUnicode CMaps written with spaces (`/ CIDSystemInfo`, `/ Registry(Adobe)`, `Adobe - Identity - UCS`); text extractors such as pdfminer raise `Invalid dictionary construct`, so no tag text is read from those pages. Rewriting the CMaps without the spaces fixed detection while keeping the PDF as vector text. Check a file with `pdfminer.six` `extract_text` before sending.
+
 ### Fixed
 - `signrequest_create_embedded_signing_links` and `signrequest_bulk_send` reported the signature request's uuid as `document_uuid`; it now comes from the response's `document` URL.
 
