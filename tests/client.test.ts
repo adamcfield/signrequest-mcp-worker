@@ -113,3 +113,15 @@ describe("SignRequestClient.searchAllDocuments", () => {
     expect(f).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("is_being_prepared", () => {
+  it("is forwarded in the body of quickCreate and send", async () => {
+    const f = mockFetch([{ status: 201, body: JSON.stringify({ prepare_url: "p" }) }]);
+    vi.stubGlobal("fetch", f);
+    await mkClient().quickCreate({ file_from_url: "https://x.test/a.pdf", signers: [{ email: "a@x.com" }], is_being_prepared: true });
+    await mkClient().send({ document: "u", signers: [{ email: "a@x.com" }], is_being_prepared: true });
+    for (const c of f.mock.calls as unknown as Array<[string, RequestInit]>) {
+      expect(JSON.parse(String(c[1].body)).is_being_prepared).toBe(true);
+    }
+  });
+});

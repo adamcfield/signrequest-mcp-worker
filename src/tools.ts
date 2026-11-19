@@ -223,7 +223,7 @@ function validateDocSource(a: {
 }
 
 /** Server version — shown in MCP initialize and the health check. Keep in sync with package.json. */
-export const VERSION = "1.10.1";
+export const VERSION = "1.11.0";
 
 // Annotations: hints so a client knows which tools are safe to auto-run.
 // All tools call an external service, so openWorldHint is true throughout.
@@ -312,7 +312,7 @@ export function registerTools(
     "signrequest_quick_create",
     {
       description:
-        "Create a document AND send the signature request in one call. The most common entry point. Provide a document source (file_from_url preferred, or base64 file_from_content + name, or a template URL) and at least one signer. Sends real emails.",
+        "Create a document AND send the signature request in one call. The most common entry point. Provide a document source (file_from_url preferred, or base64 file_from_content + name, or a template URL) and at least one signer. Sends real emails. TEXT TAGS: place [[t|N]] (text), [[s|N]] (signature) and [[d|N]] (date) in the PDF. N is the signer's index, 0-based, counting only the people in 'signers' when who='o' (the sender is not counted); with who='m'/'mo' the sender is index 0. A tag whose index has no signer, or more signers than tags, is silently ignored by SignRequest. Write tags compact with NO spaces inside (e.g. [[s|0]]); spaces inside tags, especially in right-to-left (Hebrew) PDFs, can break detection. Field width follows the tag's font size. Detected fields are only visible in the signing UI (open an embedded link with disable_emails=true to check before a real send); if none appear, retry with is_being_prepared=true and place fields by hand via prepare_url.",
       inputSchema: {
         ...docSourceShape,
         signers: z.array(signerSchema).min(1).describe("People who need to sign."),
@@ -326,6 +326,12 @@ export function registerTools(
         name: z.string().optional().describe("Document display name."),
         events_callback_url: z.string().url().optional().describe("Per-document webhook callback URL."),
         disable_emails: z.boolean().optional().describe("Suppress SignRequest status emails (combine with per-signer embed_url_user_id for a fully silent request)."),
+        is_being_prepared: z
+          .boolean()
+          .optional()
+          .describe(
+            "Hold the request in SignRequest's prepare step instead of sending it, so fields can be placed by hand. The response carries 'prepare_url' (open it in a browser, place the fields, then send). Use as a fallback when text tags are not detected.",
+          ),
         dry_run: z.boolean().optional().describe("Preview only: report who WOULD be emailed without creating or sending anything."),
       },
       annotations: {
@@ -372,6 +378,7 @@ export function registerTools(
             name: a.name,
             events_callback_url: a.events_callback_url,
             disable_emails: a.disable_emails,
+            is_being_prepared: a.is_being_prepared,
           }),
         );
       } catch (e) {
@@ -439,6 +446,12 @@ export function registerTools(
           .describe(
             "Suppress SignRequest status emails. Combine with per-signer embed_url_user_id (which suppresses the signing email) for a fully silent, no-email request.",
           ),
+        is_being_prepared: z
+          .boolean()
+          .optional()
+          .describe(
+            "Hold the request in SignRequest's prepare step instead of sending it, so fields can be placed by hand. The response carries 'prepare_url' (open it in a browser, place the fields, then send). Use as a fallback when text tags are not detected.",
+          ),
         dry_run: z.boolean().optional().describe("Preview only: report who WOULD be emailed without sending anything."),
       },
       annotations: {
@@ -475,6 +488,7 @@ export function registerTools(
             send_reminders: a.send_reminders,
             who: a.who,
             disable_emails: a.disable_emails,
+            is_being_prepared: a.is_being_prepared,
           }),
         );
       } catch (e) {
