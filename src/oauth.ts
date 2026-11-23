@@ -32,6 +32,8 @@
  *   SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
  */
 
+import { serverIcons } from "./server-icon.js";
+import { BRAND } from "./ui.js";
 import { env as workerEnv } from "cloudflare:workers";
 import OAuthProvider, { OAuthError } from "@cloudflare/workers-oauth-provider";
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
@@ -79,7 +81,7 @@ type AuthRequest = Awaited<ReturnType<OAuthHelpers["parseAuthRequest"]>>;
 
 /** The MCP agent — identical tool surface to the bearer worker. */
 export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
-  server = new McpServer({ name: "signrequest", version: VERSION });
+  server = new McpServer({ name: "signrequest", version: VERSION, icons: serverIcons(BRAND.logo) });
 
   async init(): Promise<void> {
     const client = new SignRequestClient({

@@ -23,6 +23,8 @@
  *   SIGNREQUEST_FROM_EMAIL, SIGNREQUEST_BASE_URL, SIGNREQUEST_MAX_RETRIES
  */
 
+import { serverIcons } from "./server-icon.js";
+import { BRAND } from "./ui.js";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SignRequestClient } from "./signrequest.js";
@@ -48,7 +50,7 @@ declare global {
 type Env = Cloudflare.Env;
 
 export class SignRequestMCP extends McpAgent<Env, unknown, Props> {
-  server = new McpServer({ name: "signrequest", version: VERSION });
+  server = new McpServer({ name: "signrequest", version: VERSION, icons: serverIcons(BRAND.logo) });
 
   async init(): Promise<void> {
     // Read per request: a session's props follow the credential presented on each request
